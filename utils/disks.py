@@ -3,13 +3,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from typing import Optional, Tuple, Union
-import matplotlib.pyplot as plt
 from torch import Tensor
-from PIL import Image
-import gzip
-from matplotlib.patches import Circle, Polygon
-import random
-import pywt
 
 # ---------------------------------------------------------------------------- #
 #                                 disk dataset                                 #
@@ -28,7 +22,7 @@ def load_disks_dataset_from_wandb():
     return dataset, dataset_description
 
 
-class CustomDataset(Dataset):
+class DiskDataset(Dataset):
     def __init__(self, data):
         self.data = data
         self.transform = lambda x: x * 2 - 1  # normalize to [-1, 1]
@@ -327,12 +321,23 @@ def make_two_disks_img(
 
 
 def create_two_disk_img_using_global_vars(
-        img_size, outer_radius, transition_width, d, 
-        theta, delta_id, ib, cx, cy):
+        img_size, outer_radius, transition_width, d,
+        theta, delta_id, ib, cx_01, cy_01):
     # state the dependency of id on orientation
-    avg_id = 0.5 + 0.3 * np.sin(theta)
-    id1 = avg_id - delta_id
-    id2 = avg_id + delta_id
+
+    # make sure that the circles are fully within the image
+    c_min = d/2 + outer_radius
+    c_max = img_size - (d/2 + outer_radius)
+
+    # convert coordinates into pixels
+    cx = c_min + (c_max - c_min) * cx_01
+    cy = c_min + (c_max - c_min) * cy_01
+
+    # get avg intensity: if cy = c_max, get minimum intensity. if cy = c_min, get maximum intensity.
+    min_avg_id = 1.1 * delta_id
+    avg_id = min_avg_id + (1 - 2 * min_avg_id) * (c_max - cy) / (c_max - c_min)
+    id1 = avg_id + np.cos(theta) * delta_id
+    id2 = avg_id - np.cos(theta) * delta_id
 
     img = make_two_disks_img(
         img_size, outer_radius, transition_width, d,
@@ -345,6 +350,7 @@ def random_two_disk_dataset(
         delta_id:float=.2,
         d:float=20, outer_radius:float=8, transition_width:float=2,
         img_size:int=64, num_imgs:int=1e3,
+        cx_01:Optional[float]=None, cy_01:Optional[float]=None, ib:Optional[float]=None, theta:Optional[float]=None,
     ):
     '''The background is a fn of cx and cy.
     '''
@@ -354,27 +360,42 @@ def random_two_disk_dataset(
     assert outer_radius > 0, 'outer_radius should be positive'
     assert img_size > d, 'img_size should be greater than d'
 
-    c_min = d/2 + outer_radius
-    c_max = img_size - (d/2 + outer_radius)
+    cx_01_init = cx_01
+    cy_01_init = cy_01
+    ib_init = ib
+    theta_init = theta
 
+    num_imgs = int(num_imgs)
     dataset = torch.empty((num_imgs, 1, img_size, img_size), dtype=torch.float32)
+    avg_intensities = torch.empty((num_imgs,), dtype=torch.float32)
+    cxs = torch.empty((num_imgs,), dtype=torch.float32)
+    cys = torch.empty((num_imgs,), dtype=torch.float32)
+    thetas = torch.empty((num_imgs,), dtype=torch.float32)
+
     for i in range(num_imgs):
         # ------------------------------ global factors ------------------------------ #
         # uniform sampling of cluster center position
-        cx = c_min + np.random.rand() * (c_max - c_min)
-        cy = c_min + np.random.rand() * (c_max - c_min)
+        cx_01 = np.random.rand() if cx_01_init is None else cx_01_init
+        cy_01 = np.random.rand() if cy_01_init is None else cy_01_init
 
         # uniform sampling of background intensity
-        ib = np.random.rand()
+        ib = np.random.rand() if ib_init is None else ib_init
         assert ib >= 0 and ib <= 1
 
         # uniform sampling of orientation between 0 and 2pi
-        theta = np.random.rand() * 2 * np.pi
+        if theta_init is None:
+            theta = np.random.rand() * 2 * np.pi
+        else:
+            theta = theta_init
 
         # ------------------------------- local factors ------------------------------ #
         img, avg_id, id1, id2 = create_two_disk_img_using_global_vars(
             img_size, outer_radius, transition_width, d,
-            theta, delta_id, ib, cx, cy)
+            theta, delta_id, ib, cx_01, cy_01)
         dataset[i] = img
+        avg_intensities[i] = avg_id
+        cxs[i] = cx_01
+        cys[i] = cy_01
+        thetas[i] = theta
 
-    return dataset
+    return dataset, avg_intensities, cxs, cys, thetas

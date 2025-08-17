@@ -23,12 +23,12 @@ def broadcast(x, like):
     return x.view(-1, *((1,) * (len(like.shape) - 1)))
 
 
-def unnormalize_to_01(img):
+def to_01(img):
     # img = img * 0.5 + 0.5  # Map from (-1, 1) back to (0, 1)
     img = (img + 1) / 2.0
     return img
 
-def normalize_to_m1p1(img):
+def to_0c(img):
     img = img * 2 - 1  # Map from (0, 1) to (-1, 1)
     return img
 
