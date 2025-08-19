@@ -1,14 +1,12 @@
 import numpy as np
 import torch
-
-'''This script contains the implementation of the single latent stage autoprior model with conditional diffusion models and convolutional encoders'''
-
-import numpy as np
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 import torch.distributions as dist
+
+'''This script contains the implementation of the single latent VAE model with convolutional encoders and deconvolutional decoders'''
+
     
 '''Variable Convolutional Encoder'''
 class VariableConvEncoder(nn.Module):
