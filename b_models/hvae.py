@@ -6,75 +6,61 @@ import math
 import torch.distributions as dist
 
 '''This contains the implementation of a hierarchical VAE model in the style of ladder VAEs'''
-
-class EncoderBlock(nn.Module):
-    def __init__(self, input_channels, output_channels, kernel_size=3, stride=2, padding=1, bias=True):
-        super(EncoderBlock, self).__init__()
-        self.conv = nn.Conv2d(input_channels, output_channels, kernel_size, stride, padding, bias=bias)
-        self.bn = nn.BatchNorm2d(output_channels)
+def merge_gaussians(mu1, var1, mu2, var2):
+    precision1 = 1 / (var1 + 1e-8)
+    precision2 = 1 / (var2 + 1e-8)
     
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        return F.relu(x)
+    # combined mu
+    new_mu = (mu1 * precision1 + mu2 * precision2) / (precision1 + precision2)
 
-
-class ConvEncoder(nn.Module):
-    def __init__(self, input_channels, hidden_channels, output_channels):
-        super(ConvEncoder, self).__init__()
-        self.enc1 = EncoderBlock(input_channels, hidden_channels)
-        self.enc2 = EncoderBlock(hidden_channels, output_channels)
-
-    def forward(self, x):
-        x = self.enc1(x)
-        x = self.enc2(x)
-        return x
+    # combined variance
+    new_var = 1 / (precision1 + precision2)
+    return new_mu, new_var
 
 
 '''Variable Convolutional Encoder'''
-class VariableConvEncoder(nn.Module):
+class EncoderConvBlock(nn.Module):
     def __init__(
             self, 
             num_channels,
-            image_dims,
-            latent_dims, 
+            img_dim,
+            latent_dim, 
             channels=[4, 8, 16], 
             bias=True,
         ):
-        super(VariableConvEncoder, self).__init__()
+        super(EncoderConvBlock, self).__init__()
         '''
-        image_dims: int, the dimension of the input image height or width'''
+        image_dim: int, the dimension of the input image height or width'''
         
-        self.channels = channels
-        self.kernel_size = 3
-        self.stride = 2
-        self.padding = 1
+        self.channels = [num_channels, *channels]
+        self.ksp = [3, 2, 1]
 
         '''first convolutional layer'''
-        self.d1_input_channels = num_channels
-        self.d1_input_dims = image_dims
         # input: 1 x 32 x 32
         # output: 4 x 16 x 16
-        self.conv_d1 = nn.Conv2d(self.d1_input_channels, self.channels[0], self.kernel_size, self.stride, self.padding)
 
-        if len(self.channels) > 1:
-            for i in range(1, len(self.channels)):
-                setattr(self, f'conv_d{i+1}', nn.Conv2d(self.channels[i-1], self.channels[i], self.kernel_size, self.stride, self.padding))
-                setattr(self, f'd{i+1}_input_dims', self.compute_output_dims(getattr(self, f'd{i}_input_dims'), self.channels[i-1], self.kernel_size, self.stride, self.padding))
+        self.conv_network = nn.ModuleList()
+        for idx in range(len(self.channels)-1):
+            self.conv_network.append(nn.Conv2d(self.channels[idx], self.channels[idx+1], *self.ksp, bias=bias))
+            self.conv_network.append(nn.ReLU())
 
-        '''linear layers'''
-        linear_input_dims = self.compute_output_dims(getattr(self, f'd{len(self.channels)}_input_dims'), self.channels[-1], self.kernel_size, self.stride, self.padding)
-        linear_input_dims = linear_input_dims**2 * self.channels[-1]
-        self.linear_mu = nn.Linear(linear_input_dims, latent_dims, bias=bias)
-        self.linear_sig = nn.Linear(linear_input_dims, latent_dims, bias=bias)
+        self.layer_input_dim = img_dim
+        self.compute_projection_dim()
+        linear_input_dim = self.layer_input_dim**2 * self.channels[-1]
+        self.linear_mu = nn.Linear(linear_input_dim, latent_dim, bias=bias)
+        self.linear_sig = nn.Linear(linear_input_dim, latent_dim, bias=bias)
+
+    def compute_projection_dim(self):
+        for i in range(len(self.channels)-1):
+            self.layer_input_dim = self.compute_output_dims(self.layer_input_dim, *self.ksp)
         
-    def compute_output_dims(self, input_dim, output_channels, kernel, stride, padding):
+    def compute_output_dims(self, input_dim, kernel, stride, padding):
         '''calculate the output dimensions of a convolutional layer, for a given input dimension and convolutional settings'''
         return ((input_dim - kernel + 2*padding)//stride + 1)
     
     def forward(self, x):
-        for i in range(1, len(self.channels)+1):
-            x = F.relu(getattr(self, f'conv_d{i}')(x))
+        for i in range(len(self.conv_network)):
+            x = self.conv_network[i](x)
         
         x = torch.flatten(x, start_dim=1)
         mu = self.linear_mu(x)
@@ -84,53 +70,44 @@ class VariableConvEncoder(nn.Module):
         return z, mu, var
 
 
-class VariableConvDecoder(nn.Module):
+class DecoderConvBlock(nn.Module):
     def __init__(self,
-                 num_channels:int,
-                 img_dims:int,
-                 latent_dims:int,
-                 channels=[8, 4, 2],
-                 output_channels:int=1,
+                 latent_in_dim:int,
+                 latent_out_dim:int,
+                 output_dim:int,
+                #  out_channels:int=1,
+                 channels:list[int]=[8, 4, 2, 1],
                  bias:bool=True,
                  ):
-        super(VariableConvDecoder, self).__init__()
+        super(DecoderConvBlock, self).__init__()
         
-        self.img_C = num_channels
-        self.img_H = self.img_W = img_dims
-        self.latent_dims = latent_dims
-        self.channels = channels
-        self.output_channels = output_channels
-        self.kernel_size = 4
-        self.stride = 2
-        self.padding = 1
+        # self.channels = [out_channels, *channels]
+        self.channels = [*channels]
+        self.ksp = [4, 2, 1]
         self.activation_fn = nn.ReLU()
 
         # first project the latent variable into the input dimensions of the conv network
-        self.projection_dim = self.img_H
+        self.projection_dim = output_dim
         self.compute_projection_dim()
-        self.in_project = nn.Linear(self.latent_dims, self.channels[-1]*self.projection_dim**2, bias=bias)
+        self.in_project = nn.Linear(latent_in_dim, self.channels[-1]*self.projection_dim**2, bias=bias)
 
         # deconvolutional network to generate the likelihood score
         self.deconv_network = nn.ModuleList()
-        self.deconv_network.append(nn.ConvTranspose2d(self.channels[-1], self.channels[-2], self.kernel_size, self.stride, self.padding, bias=bias))
-        self.deconv_network.append(self.activation_fn)
-        for idx in range(len(self.channels)-1, 1, -1):
-            self.deconv_network.append(nn.ConvTranspose2d(self.channels[idx-1], self.channels[idx-2], self.kernel_size, self.stride, self.padding, bias=bias))
+        for idx in range(len(self.channels)-1, -1, -1):
+            self.deconv_network.append(nn.ConvTranspose2d(self.channels[idx], self.channels[idx-1], *self.ksp, bias=bias))
             self.deconv_network.append(self.activation_fn)
-        self.deconv_network.append(nn.ConvTranspose2d(self.channels[0], output_channels, self.kernel_size, self.stride, self.padding, bias=bias))
-    
+
+        self.linear_mu = nn.Linear(output_dim**2 * self.channels[-1], latent_out_dim)
+        self.linear_sig = nn.Linear(output_dim**2 * self.channels[-1], latent_out_dim)
+
     def compute_projection_dim(self):
         '''calculate the input dimensions of the conv network'''
         for i in range(1, len(self.channels)+1):
-            self.projection_dim = self.compute_conv_output_dims(self.projection_dim, self.channels[i-1], self.kernel_size, self.stride, self.padding)
+            self.projection_dim = self.compute_conv_output_dims(self.projection_dim, *self.ksp)
 
-    def compute_conv_output_dims(self, input_dim, output_channels, kernel, stride, padding):
+    def compute_conv_output_dims(self, input_dim, kernel, stride, padding):
         '''calculate the output dimensions of a convolutional layer, for a given input dimension and convolutional settings'''
         return ((input_dim - kernel + 2*padding)//stride + 1)
-    
-    def compute_deconv_output_dims(self, input_dim, output_channels, kernel, stride, padding):
-        '''calculate the output dimensions of a deconvolutional layer, for a given input dimension and convolutional settings'''
-        return (input_dim - 1) * stride - 2*padding + kernel
     
     def forward(self, z):
         z = self.in_project(z)
@@ -138,8 +115,37 @@ class VariableConvDecoder(nn.Module):
 
         for i in range(len(self.deconv_network)):
             z = self.deconv_network[i](z)
-        return z
-        
+
+        z = torch.flatten(z, start_dim=1)
+
+        z2_mu = self.linear_mu(z)
+        z2_sig = F.softplus(self.linear_sig(z)) + 1e-6  # ensure variance is positive
+        z2 = z2_mu + z2_sig*torch.randn_like(z2_mu)
+        return z2, z2_mu, z2_sig**2
+
+
+class LadderVAE(nn.Module):
+    def __init__(
+            self, 
+            num_channels:int,
+            image_dim:int,
+            latent_dims:list[int], 
+            channels:list[int]=[4, 8, 16], 
+            bias=True,
+            ):
+        self.image_dim = image_dim
+        self.hidden_dims = hidden_dims
+        self.z_dims = z_dims
+        self.n_layers = len(z_dims)
+
+        dims = [image_dim, *hidden_dims]
+        encoder_layers = nn.ModuleList([EncoderMLPBlock(dims[i], dims[i+1], z_dims[i]) for i in range(self.n_layers)])
+        decoder_layers = nn.ModuleList([DecoderMLPBlock(z_dims[i], dims[i+1], z_dims[i]) for i in range(self.n_layers-1)])[::-1]
+
+        self.xhat = FinalDecoder(z_dims[0], dims[0], input_dim)
+
+
+
 
 class VAE(nn.Module):
     def __init__(self, 
