@@ -191,7 +191,7 @@ class TopDownBlock(nn.Module):
     def __init__(self, z_in, c_in, c_out, input_dim, num_blocks=2, return_z_params=False, z_out=None,):
         super(TopDownBlock, self).__init__()
         self.return_z_params = return_z_params
-        #TODO: dynamic kernel_size in the expand block to match the final HxW of the image from the bottom-up blocks
+        # dynamic kernel_size in the expand block to match the final HxW of the image from the bottom-up blocks
         self.expand_block = nn.ConvTranspose2d(z_in, c_in, kernel_size=input_dim, stride=1, padding=0)
         self.conv_block = ConvBlock(c_in, c_out, num_blocks=num_blocks,mode='top_down')
         if self.return_z_params:
@@ -203,20 +203,19 @@ class TopDownBlock(nn.Module):
             )
 
     def forward(self, z, top_down_input=None):
+        print('z input shape:', z.shape)
         z = z.unsqueeze(-1).unsqueeze(-1)  # reshape to (B, z_in, 1, 1)
         d = self.expand_block(z)
+        print('post expand shape:', d.shape)
 
         if top_down_input is not None:
             d += top_down_input
 
-        if self.return_z_params:
-            prior_params = self.compress_block(d)
-            prior_params = prior_params
-            # mu, lv = z.chunk(2, dim=1)
-            # return self.conv_block(d), mu, lv
-            return self.conv_block(d), prior_params
+        d = self.conv_block(d)
+        print('post conv block', d.shape)
 
-        return self.conv_block(d)
+        prior_params = self.compress_block(d) if self.return_z_params else None
+        return d, prior_params
 
 class MergeBlock(nn.Module):
     '''takes in parameters of the likelihood and prior, outputs parameters of merged Gaussian posterior'''
@@ -247,19 +246,23 @@ class MergeBlock(nn.Module):
     
 
 class LadderVAE(nn.Module):
-    def __init__(self, input_dim, z_dims:list[int], c_in:list[int], c_out:list[int], num_blocks=2):
+    # def __init__(self, input_dim, z_dims:list[int], c_in:list[int], c_out:list[int], num_blocks=2):
+    def __init__(self, input_dim, z_dims:list[int], channels:list[int], num_blocks=2):
         super(LadderVAE, self).__init__()
+        assert len(channels) == len(z_dims) + 1, "channels must be one more than z_dims"
         encoder_layers = []
         for i in range(len(z_dims)):
-            encoder_layers.append(BottomUpBlock(c_in[i], c_out[i], z_dims[i], num_blocks=num_blocks))
+            encoder_layers.append(BottomUpBlock(channels[i], channels[i+1], z_dims[i], num_blocks=num_blocks))
         self.encoder = nn.ModuleList(encoder_layers)
 
-        final_dim = int(input_dim / len(z_dims))
+        final_dim = int(input_dim / (2**len(z_dims)))
 
         decoder_layers = []
         for i in range(len(z_dims)):
-            decoder_layers.append(TopDownBlock(z_dims[i], c_out[i], c_in[i], 
-                                               input_dim=final_dim*(len(z_dims)-i), 
+            input_dim = final_dim * (len(z_dims)-i)
+            print(input_dim)
+            decoder_layers.append(TopDownBlock(z_dims[i], channels[i+1], channels[i], 
+                                               input_dim=input_dim, 
                                                num_blocks=num_blocks, 
                                                return_z_params=(i>0), 
                                                z_out=z_dims[i-1] if i>0 else None)
@@ -303,7 +306,7 @@ class LadderVAE(nn.Module):
             # for the bottom block, use the merged latent and top-down output of block above
             else:
                 z_merged = self.reparameterization_trick(*posterior_params[-1].chunk(2, dim=1))
-                d = layer(z_merged, d)
+                d, _ = layer(z_merged, d)
         return d
     
 
