@@ -102,14 +102,14 @@ class SpatialEncoderConvBlock(nn.Module):
 
     def forward(self, x):
         d = x
-        print(d.shape)
+        # print(d.shape)
         for i in range(len(self.conv_network)):
             d = self.conv_network[i](d)
-            print(d.shape)
+            # print(d.shape)
 
         mu = torch.flatten(self.mu_readout(d), start_dim=1)
         var = torch.flatten(self.var_readout(d), start_dim=1)
-        print(mu.shape)
+        # print(mu.shape)
         return d, mu, var
 
 
@@ -155,11 +155,11 @@ class ConvBlock(nn.Module):
         self.block = nn.Sequential(*modules)
 
     def forward(self, x):
-        print(x.shape)
+        # print(x.shape)
         x = self.pre_conv(x)
-        print(x.shape)
+        # print(x.shape)
         x = self.block(x)
-        print(x.shape)
+        # print(x.shape)
         return x
     
 class BottomUpBlock(nn.Module):
@@ -203,16 +203,16 @@ class TopDownBlock(nn.Module):
             )
 
     def forward(self, z, top_down_input=None):
-        print('z input shape:', z.shape)
+        # print('z input shape:', z.shape)
         z = z.unsqueeze(-1).unsqueeze(-1)  # reshape to (B, z_in, 1, 1)
         d = self.expand_block(z)
-        print('post expand shape:', d.shape)
+        # print('post expand shape:', d.shape)
 
         if top_down_input is not None:
             d += top_down_input
 
         d = self.conv_block(d)
-        print('post conv block', d.shape)
+        # print('post conv block', d.shape)
 
         prior_params = self.compress_block(d) if self.return_z_params else None
         return d, prior_params
@@ -255,12 +255,13 @@ class LadderVAE(nn.Module):
             encoder_layers.append(BottomUpBlock(channels[i], channels[i+1], z_dims[i], num_blocks=num_blocks))
         self.encoder = nn.ModuleList(encoder_layers)
 
-        final_dim = int(input_dim / (2**len(z_dims)))
+        # the model divides the spatial dimensions by 2 every latent stage
+        final_dim = int(input_dim / (2**(len(z_dims))))
 
         decoder_layers = []
         for i in range(len(z_dims)):
             input_dim = final_dim * (len(z_dims)-i)
-            print(input_dim)
+            # print('input_dim:', input_dim)
             decoder_layers.append(TopDownBlock(z_dims[i], channels[i+1], channels[i], 
                                                input_dim=input_dim, 
                                                num_blocks=num_blocks, 
@@ -271,6 +272,8 @@ class LadderVAE(nn.Module):
 
         self.merge_block = MergeBlock()
 
+        self.kl = 0
+
     def reparameterization_trick(self, mu, lv):
         return mu + torch.exp(0.5 * lv) * torch.randn_like(lv)
 
@@ -279,7 +282,7 @@ class LadderVAE(nn.Module):
         bu_params = []
         i = 0
         for layer in self.encoder:
-            print('i:', i)
+            # print('i:', i)
             d, z_params = layer(d)
             bu_params.append(z_params)
             i += 1
@@ -289,7 +292,7 @@ class LadderVAE(nn.Module):
 
         posterior_params = []
         for i, layer in enumerate(self.decoder):
-            print('j:', i)
+            # print('j:', i)
             # for the top block, take only the top-level latent
             if i == 0:
                 d, td_params = layer(z_top)
@@ -308,160 +311,4 @@ class LadderVAE(nn.Module):
                 z_merged = self.reparameterization_trick(*posterior_params[-1].chunk(2, dim=1))
                 d, _ = layer(z_merged, d)
         return d
-    
-
-
-
-
-
-class DecoderConvBlock(nn.Module):
-    '''
-    Top-down layer, including stochastic sampling, KL computation, and small
-    deterministic ResNet with upsampling.
-
-    The architecture when doing inference is roughly as follows:
-        p_params = output of top-down layer above
-        bu = inferred bottom-up value at this layer
-        q_params = merge(bu, p_params)
-        z = stochastic_layer(q_params)
-        possibly get skip connection from previous top-down layer
-        top-down deterministic ResNet
-
-    When doing generation only, the value bu is not available, the
-    merge layer is not used, and z is sampled directly from p_params.
-
-    If this is the top layer, at inference time, the uppermost bottom-up value
-    is used directly as q_params, and p_params are defined in this layer
-    (while they are usually taken from the previous layer), and can be learned.
-    '''
-    def __init__(self,
-                 latent_in_dim:int,
-                 latent_out_dim:int,
-                 output_dim:int,
-                #  out_channels:int=1,
-                 channels:list[int]=[8, 4, 2, 1],
-                 bias:bool=True,
-                 ):
-        super(DecoderConvBlock, self).__init__()
-        
-        # self.channels = [out_channels, *channels]
-        self.channels = [*channels]
-        self.ksp = [4, 2, 1]
-        self.activation_fn = nn.ReLU()
-
-        # first project the latent variable into the input dimensions of the conv network
-        self.projection_dim = output_dim
-        self.compute_projection_dim()
-        self.in_project = nn.Linear(latent_in_dim, self.channels[-1]*self.projection_dim**2, bias=bias)
-
-        # deconvolutional network to generate the likelihood score
-        self.deconv_network = nn.ModuleList()
-        for idx in range(len(self.channels)-1, -1, -1):
-            self.deconv_network.append(nn.ConvTranspose2d(self.channels[idx], self.channels[idx-1], *self.ksp, bias=bias))
-            self.deconv_network.append(self.activation_fn)
-
-        self.linear_mu = nn.Linear(output_dim**2 * self.channels[-1], latent_out_dim)
-        self.linear_sig = nn.Linear(output_dim**2 * self.channels[-1], latent_out_dim)
-
-    def compute_projection_dim(self):
-        '''calculate the input dimensions of the conv network'''
-        for i in range(1, len(self.channels)+1):
-            self.projection_dim = self.compute_conv_output_dims(self.projection_dim, *self.ksp)
-
-    def compute_conv_output_dims(self, input_dim, kernel, stride, padding):
-        '''calculate the output dimensions of a convolutional layer, for a given input dimension and convolutional settings'''
-        return ((input_dim - kernel + 2*padding)//stride + 1)
-    
-    def forward(self, z):
-        print(z.shape)
-        z = self.in_project(z)
-        print(z.shape)
-        z = z.view(-1, self.channels[-1], self.projection_dim, self.projection_dim)
-
-        print(z.shape)
-        for i in range(len(self.deconv_network)):
-            z = self.deconv_network[i](z)
-            print(z.shape)
-        print('end of deconv network')
-
-        z = torch.flatten(z, start_dim=1)
-
-        z2_mu = self.linear_mu(z)
-        z2_sig = F.softplus(self.linear_sig(z)) + 1e-6  # ensure variance is positive
-        z2 = z2_mu + z2_sig*torch.randn_like(z2_mu)
-        return z2, z2_mu, z2_sig**2
-
-
-class VAE(nn.Module):
-    def __init__(self, 
-                 encoder: nn.Module,  # half UNet encoder
-                 decoder: nn.Module,  # UNet decoder
-                 kl_reduction: str = 'mean',
-                 ):
-        super(VAE, self).__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.kl_reduction = kl_reduction
-        self.kl = torch.tensor(0.0, requires_grad=True)
-        # self.img_C, self.img_H, self.img_W = image_resolution
-    
-    
-    def scale_to_minus_one_to_one(self, x):
-        # according to the DDPMs paper, normalization seems to be crucial to train reverse process network
-        return x * 2 - 1
-    
-    def reverse_scale_to_zero_to_one(self, x):
-        return (x + 1) * 0.5
-
-    def compute_kl_vectorized(self, mu, var):
-        """
-        Computes KL divergence between q = N(mu, diag(var)) and p = N(0, I).
-        
-        Args:
-            mu: Tensor of shape (B, z_dim), mean of q.
-            var: Tensor of shape (B, z_dim), diagonal elements of covariance (variances).
-        
-        Returns:
-            kl: Scalar, KL divergence after reduction (sum or mean over z_dim).
-        """
-        var = torch.clamp(var, min=1e-6)
-        
-        # Compute KL terms: 0.5 * (var + mu^2 - 1 - log(var))
-        kl_per_dim = 0.5 * (var + mu**2 - 1 - torch.log(var))  # Shape: (B, z_dim)
-        
-        # Reduce over z_dim
-        kl = kl_per_dim.sum(dim=1)  # Shape: (B,)
-        
-        # Reduce over batch
-        kl = kl.mean(dim=0)  # Scalar
-        
-        # Apply final reduction (sum or mean over z_dim)
-        self.kl = kl.sum() if self.kl_reduction == 'sum' else kl.mean()
-        
-
-    def forward(self, x):
-        z, mu, var = self.encoder(x)
-        xhat = self.decoder(z)
-        self.compute_kl_vectorized(mu, var)
-        return xhat, x, torch.ones_like(x)
-
-    # --------------------------------- inference -------------------------------- #
-    def conditional_sample(self, N, target_image):
-        self.encoder.eval()
-        self.decoder.eval()
-        target_image = target_image.repeat(N, 1, 1, 1)
-        z_sample, z_mean, z_sd = self.encoder(target_image)
-        xhat = self.decoder(z_sample)
-        
-        return xhat, z_mean, z_sd
-    
-    def unconditional_sample(self, N):
-        self.decoder.eval()
-        
-        z = torch.randn(N, self.encoder.latent_dims, device=self.device)
-        z_mean = torch.zeros_like(z)
-        z_sd = torch.ones_like(z)
-        xhat = self.decoder(z)
-        
-        return xhat, z_mean, z_sd
     
