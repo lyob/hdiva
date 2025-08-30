@@ -292,3 +292,9 @@ class VAE(nn.Module):
             d = layer(d)
         return d
     
+    def criterion(self, clean_x):
+        prediction = self.forward(clean_x)
+        # Compute the loss
+        mse_loss = F.mse_loss(prediction, clean_x, reduction="mean")
+        weighted_mse_loss = mse_loss.mean()
+        return weighted_mse_loss, self.kl

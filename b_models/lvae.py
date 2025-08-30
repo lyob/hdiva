@@ -324,7 +324,9 @@ class LadderVAE(nn.Module):
             # for the top block, take only the top-level latent
             if i == 0:
                 d, td_params = layer(z_top)
-                posterior_params.append(self.merge_block(bu_params[-i-2], td_params))
+                print(td_params.shape)
+                # posterior_params.append(self.merge_block(bu_params[-i-2], td_params))
+                posterior_params.append(td_params)
 
             # for all top-down blocks in the middle that are neither top nor bottom,
             # use the merged latent and top-down output of block above, and return 

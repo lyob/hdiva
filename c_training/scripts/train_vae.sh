@@ -1,6 +1,6 @@
 #!/bin/bash -l
 
-#SBATCH --job-name=hdisks
+#SBATCH --job-name=vae
 #SBATCH -p gpu
 #SBATCH -N 1
 #SBATCH -C a100-80gb
@@ -39,7 +39,7 @@ srun --error="$main_dir/c_training/cluster_logs/${jobid}/err.err" \
 			--rdzv_id $SLURM_JOB_ID \
 			--rdzv_backend c10d \
 			--rdzv_endpoint $master_node:29500 \
-				c_training/train_hdiva.py
+				c_training/vae_train.py
 
 sleep 1
 cd $current_dir

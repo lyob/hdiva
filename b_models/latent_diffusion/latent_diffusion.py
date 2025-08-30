@@ -3,22 +3,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import torch.distributions as dist
-from models.infnet import HalfUNetInfNetNoTime, HalfUNetInfNet
 
 class LatentDiffusion(nn.Module):
     def __init__(
             self, 
             vae,
             denoiser,
-            scheduler, 
         ):
         super().__init__()
         self.denoiser = denoiser
-        self.vae = vae
-        self.scheduler = scheduler
-
-        self.alphas_cumprod = self.scheduler.alphas_cumprod
-        self.num_timesteps = self.scheduler.num_inference_steps
+        self.encoder = vae.encoder
+        self.decoder = vae.decoder
 
     def extract(self, a, t, x_shape):
         b, *_ = t.shape
@@ -51,24 +46,6 @@ class LatentDiffusion(nn.Module):
         # Log probability: -0.5 * (quadratic + log_det)
         log_p_z = -0.5 * (quadratic + log_det)  # Shape: (B,)
         return log_p_z
-    
-    def compute_score(self, log_p_z, noisy_x):
-        # get the log posterior score
-        rec_score = torch.autograd.grad(log_p_z, noisy_x, torch.ones_like(log_p_z), retain_graph=True, create_graph=True)[0]
-        return rec_score
-    
-    def get_z_score_and_kl(self, clean_x, noisy_x, t=None):
-        if t is not None:
-            zeros = torch.zeros_like(t)
-            z_sample, mu, var = self.infnet(clean_x, zeros)
-            _, mu_t, var_t = self.infnet(noisy_x, t)
-        else:
-            z_sample, mu, var = self.infnet(clean_x)
-            _, mu_t, var_t = self.infnet(noisy_x)
-        log_p_z = self.compute_log_posterior_vectorized(mu_t, var_t, z_sample)
-        self.compute_kl_vectorized(mu, var)
-        score = self.compute_score(log_p_z, noisy_x)
-        return score
     
     def broadcast(self, x, like):
         return x.view(-1, *((1,) * (len(like.shape) - 1)))
@@ -115,8 +92,9 @@ class LatentDiffusion(nn.Module):
         '''forward pass of the model. Assume the clean images have already been normalized to [-1, 1].'''
         B, *_ = clean_x.shape  # batch size
 
-        # (1) map the image to the latent space
-        clean_z = self.vae.encode(clean_x).latent_dist.sample()
+        # (1) map the image to the latent space using VAE encoder
+        mu, lv = self.vae.encoder(clean_x)
+        z = self.vae.reparameterization_trick(mu, lv)
 
         # (2) randomly choose diffusion time-step
         t_tensor = self.sample_timesteps(B, self.num_timesteps, dist=self.timestep_dist, device=clean_x.device)
@@ -127,10 +105,7 @@ class LatentDiffusion(nn.Module):
         noisy_z = self.add_noise(clean_z, noise, t_tensor)
         noisy_z = noisy_z.detach().requires_grad_(True)
 
-        if isinstance(self.infnet, HalfUNetInfNet):
-            z_score = self.get_z_score_and_kl(clean_x, noisy_z, t_tensor)
-        else:
-            z_score = self.get_z_score_and_kl(clean_x, noisy_z)
+        z_score = self.get_z_score_and_kl(clean_x, noisy_z)
         
         # (5) weight the score by sqrt(1-alpha_bar)
         z_score_weight = torch.sqrt(1 - self.alphas_cumprod[t_tensor])
@@ -151,8 +126,8 @@ class LatentDiffusion(nn.Module):
         return target, prediction, mse_weights
     
     def compute_loss(self, clean_x):
-        target, prediction, mse_weights = self.forward(clean_x)
+        prediction = self.forward(clean_x)
         # Compute the loss
-        mse_loss = F.mse_loss(prediction, target, reduction=self.kl_reduction)
-        weighted_mse_loss = (mse_loss * mse_weights).mean()
+        mse_loss = F.mse_loss(prediction, clean_x, reduction="mean")
+        weighted_mse_loss = mse_loss.mean()
         return weighted_mse_loss, self.kl
