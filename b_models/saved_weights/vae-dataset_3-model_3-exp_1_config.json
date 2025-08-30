@@ -1,0 +1,1 @@
+{"n_epochs": 350, "kl_schedule": "constant", "kl_weight": 1e-07, "lr": 0.001, "z_dim": 10, "channels": [1, 32, 32]}

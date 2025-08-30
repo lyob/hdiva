@@ -1,4 +1,6 @@
 import sys
+import time
+from dataclasses import asdict
 if '/mnt/home/blyo1/hdiva' not in sys.path:
     sys.path.append('/mnt/home/blyo1/hdiva')
 
@@ -7,16 +9,16 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 
 import os
-from models.lightning import Lightning_Model
-from models.config import DiVA_CelebA_64_Training_Config
+from c_training.lvae_config import LVAE_Training_Config
+from c_training.lvae_lightning import Lightning_Model
 from utils.training import rename_checkpoint_folder
 
 
 # Training script
 def main():
     # ---------------------------------- params ---------------------------------- #
-    base_dir = "/mnt/home/blyo1/diva"
-    config = DiVA_CelebA_64_Training_Config()
+    base_dir = "/mnt/home/blyo1/hdiva"
+    config = LVAE_Training_Config()
 
     # ------------------------------- run training ------------------------------- #
     # seed
@@ -25,9 +27,8 @@ def main():
     # wandb
     wandb_logger = WandbLogger(
         project=config.model_name,
-        log_model="all",
-        # log_model=True,
-        save_dir=f"{base_dir}/celeba_color/lightning_logs",
+        log_model=True,
+        save_dir=f"{base_dir}/c_training/lightning_logs",
         # checkpoint_name=f'{model_name}-{wandb.run.id}'
     )
     
@@ -40,7 +41,7 @@ def main():
         save_weights_only=True,
         save_last=True,
         save_on_train_epoch_end=True,
-        dirpath=f"{base_dir}/celeba_color/lightning_checkpoints/tmp",
+        dirpath=f"{base_dir}/c_training/lightning_checkpoints/tmp",
         enable_version_counter=True,
         filename="{epoch:04d}",
     )
@@ -66,7 +67,7 @@ def main():
     )
 
     # update the checkpoint callback's dirpath
-    rename_checkpoint_folder(trainer, checkpoint_dir=os.path.join(base_dir, "celeba_color/lightning_checkpoints"))
+    rename_checkpoint_folder(trainer, checkpoint_dir=os.path.join(base_dir, "c_training/lightning_checkpoints"))
     
     # Log hyperparameters to wandb
     training_config = {
@@ -75,11 +76,18 @@ def main():
         "num_epochs" : config.num_epochs,
         "batch_size_per_gpu" : config.train_batch_size_per_gpu,
         "precision" : config.precision,
+        # "model_config" : asdict(config)
     }
     wandb_logger.log_hyperparams(training_config)
 
     # Start training
+    start_time = time.time()
     trainer.fit(model)
+    end_time = time.time()
+
+    # Log training time
+    print(f"Training time: {(end_time - start_time)/60} minutes")
+    wandb_logger.log({"training_time": (end_time - start_time)/60})
 
     # Finish wandb run
     wandb_logger.experiment.finish()

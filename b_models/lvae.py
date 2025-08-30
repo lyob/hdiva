@@ -277,6 +277,32 @@ class LadderVAE(nn.Module):
     def reparameterization_trick(self, mu, lv):
         return mu + torch.exp(0.5 * lv) * torch.randn_like(lv)
 
+    def compute_kl_vectorized(self, mu, var):
+        """
+        Computes KL divergence between q = N(mu, diag(var)) and p = N(0, I).
+        
+        Args:
+            mu: Tensor of shape (B, z_dim), mean of q.
+            var: Tensor of shape (B, z_dim), diagonal elements of covariance (variances).
+        
+        Returns:
+            kl: Scalar, KL divergence after reduction (sum or mean over z_dim).
+        """
+        var = torch.clamp(var, min=1e-6)
+        
+        # Compute KL terms: 0.5 * (var + mu^2 - 1 - log(var))
+        kl_per_dim = 0.5 * (var + mu**2 - 1 - torch.log(var))  # Shape: (B, z_dim)
+        
+        # Reduce over z_dim
+        kl = kl_per_dim.sum(dim=1)  # Shape: (B,)
+        
+        # Reduce over batch
+        kl = kl.mean(dim=0)  # Scalar
+        
+        # Apply final reduction (sum or mean over z_dim)
+        self.kl = kl.mean()
+        # self.kl = kl.sum() if self.kl_reduction == 'sum' else kl.mean()
+
     def forward(self, x):
         d = x
         bu_params = []
@@ -288,7 +314,9 @@ class LadderVAE(nn.Module):
             i += 1
 
         # sample from top-level latent
-        z_top = self.reparameterization_trick(*bu_params[-1].chunk(2, dim=1))
+        mu, lv = bu_params[-1].chunk(2, dim=1)
+        self.compute_kl_vectorized(mu, torch.exp(lv))
+        z_top = self.reparameterization_trick(mu, lv)
 
         posterior_params = []
         for i, layer in enumerate(self.decoder):
@@ -311,4 +339,10 @@ class LadderVAE(nn.Module):
                 z_merged = self.reparameterization_trick(*posterior_params[-1].chunk(2, dim=1))
                 d, _ = layer(z_merged, d)
         return d
-    
+
+    def criterion(self, clean_x):
+        prediction = self.forward(clean_x)
+        # Compute the loss
+        mse_loss = F.mse_loss(prediction, clean_x, reduction="mean")
+        weighted_mse_loss = mse_loss.mean()
+        return weighted_mse_loss, self.kl

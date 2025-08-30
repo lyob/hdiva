@@ -32,3 +32,5 @@ def to_0c(img):
     img = img * 2 - 1  # Map from (0, 1) to (-1, 1)
     return img
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)

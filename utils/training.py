@@ -1,5 +1,6 @@
 import os
 import json
+import math
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -49,3 +50,26 @@ def rename_checkpoint_folder(
         # Update the checkpoint callback's dirpath
         checkpoint_callback.dirpath = new_folder
         print(f"Updated checkpoint callback dirpath to {new_folder}")
+
+
+def set_kl_weight(config, current_epoch):
+    kl_annealing_schedule = config.kl_annealing_schedule
+    kl_annealing_epochs = config.kl_annealing_epochs
+    kl_weight_min = config.kl_weight_min
+    kl_weight_max = config.kl_weight_max
+
+    progress = min(1, current_epoch / (kl_annealing_epochs - 1))  # Normalize to [0, 1]
+
+    if kl_annealing_schedule == "constant":
+        current_kl_weight = kl_weight_max
+    elif kl_annealing_schedule == "linear":
+        current_kl_weight = kl_weight_min + (kl_weight_max - kl_weight_min) * progress
+    elif kl_annealing_schedule == "cosine":
+        cosine_term = 0.5 * (1 + math.cos(math.pi * progress))
+        current_kl_weight = kl_weight_min + (kl_weight_max - kl_weight_min) * (1-cosine_term)
+        current_kl_weight = min(max(current_kl_weight, kl_weight_min), kl_weight_max)
+    elif kl_annealing_schedule == "linear_in_log":
+        current_kl_weight = kl_weight_min * (kl_weight_max / kl_weight_min) ** progress
+    else:
+        raise ValueError(f"Unknown kl_annealing_schedule: {kl_annealing_schedule}, expected 'constant' or 'linear' or 'cosine' or 'linear_in_log'")
+    return current_kl_weight

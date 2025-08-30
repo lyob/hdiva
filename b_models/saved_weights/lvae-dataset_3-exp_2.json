@@ -1,0 +1,1 @@
+{"input_dim": 32, "z_dims": [6, 4], "lr": 0.001, "channels": [1, 32, 32], "num_blocks": 2, "kl_schedule": "constant", "kl_weight": 0.0, "n_epochs": 400}

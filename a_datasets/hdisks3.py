@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 from typing import Optional, Tuple, Union
+from torch.utils.data import DataLoader
+from a_datasets.disks import DiskDataset
 
 # ---------------------------------------------------------------------------- #
 #                       hierarchical disk dataset number 3                     #
@@ -155,3 +157,19 @@ def random_two_disk_dataset(
         thetas[i] = theta
 
     return dataset, cx_bs, cy_bs, thetas
+
+
+def load_dataset(config):
+    data = random_two_disk_dataset(
+                img_size=config.input_dim,
+                outer_radius=4,
+                transition_width=2,
+                d=10,
+                num_imgs=config.dataset_size)[0]
+    dataset = DiskDataset(data)
+    dataloader = DataLoader(dataset, 
+                    batch_size=config.train_batch_size_per_gpu, 
+                    shuffle=True, 
+                    generator=torch.Generator().manual_seed(config.seed))
+
+    return dataloader

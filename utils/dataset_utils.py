@@ -110,12 +110,6 @@ def prepare_dataset(dataset_name, model_name, img_dim, dataset_size, local_rank)
     return architecture_name, train_dataset, dataset_info
 
 
-# ################### data loaders ####################
-# def make_loader(train_set, test_set, args, num_workers=0):
-#     trainloader = DataLoader(dataset=train_set, batch_size=args.batch_size, shuffle=True, num_workers=num_workers)
-#     testloader = DataLoader(dataset=test_set, batch_size=args.batch_size, shuffle=False, num_workers=num_workers)
-#     return trainloader, testloader
-
 def move_celeba_data_to_tmp(dataset_resolution:int):
     # dataset_shape = int(dataset_name.split('-')[-2].split('x')[0])
     sysrsync.run(source=f'datasets/celeba/attribute_images_{dataset_resolution}x{dataset_resolution}.pt', 
