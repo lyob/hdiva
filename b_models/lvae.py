@@ -212,7 +212,7 @@ class TopDownBlock(nn.Module):
             d += top_down_input
 
         d = self.conv_block(d)
-        # print('post conv block', d.shape)
+        print('post conv block', d.shape)
 
         prior_params = self.compress_block(d) if self.return_z_params else None
         return d, prior_params
@@ -318,27 +318,24 @@ class LadderVAE(nn.Module):
         self.compute_kl_vectorized(mu, torch.exp(lv))
         z_top = self.reparameterization_trick(mu, lv)
 
-        posterior_params = []
         for i, layer in enumerate(self.decoder):
-            # print('j:', i)
-            # for the top block, take only the top-level latent
             if i == 0:
+                # for the top block, take only the top-level latent sample
+                # and return the posterior sample
                 d, td_params = layer(z_top)
-                print(td_params.shape)
-                # posterior_params.append(self.merge_block(bu_params[-i-2], td_params))
-                posterior_params.append(td_params)
+                posterior_params = self.merge_block(bu_params[-2], td_params)
+                z_merged = self.reparameterization_trick(*posterior_params.chunk(2, dim=1))
 
-            # for all top-down blocks in the middle that are neither top nor bottom,
-            # use the merged latent and top-down output of block above, and return 
-            # top-down prior params to send to the layer below
             elif i > 0 and i < len(self.decoder) - 1:
-                z_merged = self.reparameterization_trick(*posterior_params[-1].chunk(2, dim=1))
+                # for all top-down blocks in the middle, take the posterior sample from the
+                # layer above, and then return this layer's posterior sample
                 d, td_params = layer(z_merged, d)
-                posterior_params.append(self.merge_block(bu_params[-i-2], td_params))
-
-            # for the bottom block, use the merged latent and top-down output of block above
+                posterior_params = self.merge_block(bu_params[-2-i], td_params)
+                z_merged = self.reparameterization_trick(posterior_params.chunk(2, dim=1))
+            
             else:
-                z_merged = self.reparameterization_trick(*posterior_params[-1].chunk(2, dim=1))
+                # for the bottom block, take the posterior sample from the layer above
+                # and return the final image
                 d, _ = layer(z_merged, d)
         return d
 
