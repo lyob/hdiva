@@ -3,7 +3,7 @@ import torch
 from typing import Optional, Tuple, Union
 
 # ---------------------------------------------------------------------------- #
-#                       hierarchical disk dataset number 3                     #
+#           hierarchical disk dataset number 3, with stochasticity             #
 # ---------------------------------------------------------------------------- #
 
 def convert_to_pixels(val:float, min_pixel:float, max_pixel:float):
@@ -74,19 +74,29 @@ def define_local_vars(
     cx_2 = cx_b + (d / 2) * np.sin(theta)
     cy_2 = cy_b + (d / 2) * np.cos(theta)
 
-    cy_1_01 = convert_to_01(cy_1, outer_radius, img_size - outer_radius)
-    cy_2_01 = convert_to_01(cy_2, outer_radius, img_size - outer_radius)
+    pixel_perturbation = convert_to_pixels(0.02, 0, img_size) 
 
-    cx_b_01 = convert_to_01(cx_b, outer_radius, img_size - outer_radius)
-    cx_b_01 = convert_to_01(cx_b, outer_radius, img_size - outer_radius)
+    cx_1 = cx_1 + np.random.randn() * pixel_perturbation
+    cy_1 = cy_1 + np.random.randn() * pixel_perturbation
+    cx_2 = cx_2 + np.random.randn() * pixel_perturbation
+    cy_2 = cy_2 + np.random.randn() * pixel_perturbation
+
+    cx_1 = np.clip(cx_1, outer_radius, img_size - outer_radius)
+    cy_1 = np.clip(cy_1, outer_radius, img_size - outer_radius)
+    cx_2 = np.clip(cx_2, outer_radius, img_size - outer_radius)
+    cy_2 = np.clip(cy_2, outer_radius, img_size - outer_radius)
 
     # individual disk intensities
-    rescale = lambda x: (((x * 2 - 1) * .6) + 1) * .5  # scale to range 0.2 to 0.8
+    rescale = lambda x: (((x * 2 - 1) * (1-2*delta_id)) + 1) * .5  # scale to range 0.2 to 0.8
     ib_scaled = rescale(ib)
     id_1 = (1 - ib_scaled) + delta_id * np.cos(theta)
     id_2 = (1 - ib_scaled) - delta_id * np.cos(theta)
-    # id_1 = (1 - cy_1_01) * (1-np.abs(cx_b_01 - 0.5)**1)
-    # id_2 = (1 - cy_2_01) * (1-np.abs(cx_b_01 - 0.5)**1)
+    
+    id_1 = id_1 + np.random.randn() * 0.05
+    id_2 = id_2 + np.random.randn() * 0.05
+
+    id_1 = np.clip(id_1, 0, 1)
+    id_2 = np.clip(id_2, 0, 1)
 
     img = make_two_disks_img(
         img_size, outer_radius, transition_width,

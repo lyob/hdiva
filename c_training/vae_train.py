@@ -87,7 +87,6 @@ def main():
 
     # Log training time
     print(f"Training time: {(end_time - start_time)/60} minutes")
-    wandb_logger.log({"training_time": (end_time - start_time)/60})
 
     # Finish wandb run
     wandb_logger.experiment.finish()

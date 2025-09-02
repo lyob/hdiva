@@ -9,7 +9,7 @@ class LVAE_Training_Config:
     z_dims: list[int] = field(default_factory=lambda: [6, 4])
 
     '''dataset parameters'''
-    dataset_name: str = "hdisks3"
+    dataset_name: str = "hdisks3_stochastic"
     dataset_size: int = 5e4
     
     '''Encoder/Decoder parameters'''
@@ -17,7 +17,7 @@ class LVAE_Training_Config:
     channels: list[int] = field(default_factory=lambda: [1, 32, 32])
     
     '''training'''
-    num_epochs: int = 1000
+    num_epochs: int = 2000
     train_batch_size_per_gpu: int = 512
     learning_rate_init: float = 1e-3
     learning_rate_final: float = 1e-3
@@ -27,13 +27,13 @@ class LVAE_Training_Config:
     '''kl schedule'''
     kl_annealing_schedule: str = "constant"
     kl_annealing_epochs: int = 1000
-    kl_weight_min: float = 1e-8
-    kl_weight_max: float = 1e-8
+    kl_weights_min: list[float] = field(default_factory=lambda: [1e-3, 1e-3])
+    kl_weights_max: list[float] = field(default_factory=lambda: [1e-3, 1e-3])
 
     '''cluster'''
     strategy: str = "ddp"  # "ddp" or "deepspeed_stage_2"
     # zero_opt_stage: int = 2
-    num_gpus_per_node: int = 4
+    num_gpus_per_node: int = 1
     num_nodes: int = 1
     precision: str = "32"
 

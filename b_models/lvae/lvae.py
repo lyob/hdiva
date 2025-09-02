@@ -46,10 +46,8 @@ class EncoderConvBlock(nn.Module):
         return ((input_dim - kernel + 2*padding)//stride + 1)
     
     def forward(self, x):
-        print(x.shape)
         for i in range(len(self.conv_network)):
             x = self.conv_network[i](x)
-            print(x.shape)
         
         x = torch.flatten(x, start_dim=1)
         mu = self.linear_mu(x)
@@ -102,14 +100,11 @@ class SpatialEncoderConvBlock(nn.Module):
 
     def forward(self, x):
         d = x
-        # print(d.shape)
         for i in range(len(self.conv_network)):
             d = self.conv_network[i](d)
-            # print(d.shape)
 
         mu = torch.flatten(self.mu_readout(d), start_dim=1)
         var = torch.flatten(self.var_readout(d), start_dim=1)
-        # print(mu.shape)
         return d, mu, var
 
 
@@ -155,11 +150,8 @@ class ConvBlock(nn.Module):
         self.block = nn.Sequential(*modules)
 
     def forward(self, x):
-        # print(x.shape)
         x = self.pre_conv(x)
-        # print(x.shape)
         x = self.block(x)
-        # print(x.shape)
         return x
     
 class BottomUpBlock(nn.Module):
@@ -170,7 +162,7 @@ class BottomUpBlock(nn.Module):
         self.compress_block = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(c_out, 2*z_out)
+            nn.Linear(c_out, 2*z_out, bias=False)
         )
 
     def forward(self, x):
@@ -199,20 +191,17 @@ class TopDownBlock(nn.Module):
             self.compress_block = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),
                 nn.Flatten(),
-                nn.Linear(c_out, 2 * z_out)
+                nn.Linear(c_out, 2 * z_out, bias=False)
             )
 
     def forward(self, z, top_down_input=None):
-        # print('z input shape:', z.shape)
         z = z.unsqueeze(-1).unsqueeze(-1)  # reshape to (B, z_in, 1, 1)
         d = self.expand_block(z)
-        # print('post expand shape:', d.shape)
 
         if top_down_input is not None:
             d += top_down_input
 
         d = self.conv_block(d)
-        print('post conv block', d.shape)
 
         prior_params = self.compress_block(d) if self.return_z_params else None
         return d, prior_params
@@ -223,14 +212,17 @@ class MergeBlock(nn.Module):
         super(MergeBlock, self).__init__()
 
     def merge_gaussians(self, mu1, var1, mu2, var2):
-        precision1 = 1 / (var1 + 1e-8)
-        precision2 = 1 / (var2 + 1e-8)
+        var1 = torch.clamp(var1, min=1e-6)
+        var2 = torch.clamp(var2, min=1e-6)
+        precision1 = 1 / var1
+        precision2 = 1 / var2
         
         # combined mu
         new_mu = (mu1 * precision1 + mu2 * precision2) / (precision1 + precision2)
 
         # combined variance
         new_var = 1 / (precision1 + precision2)
+        new_var = torch.clamp(new_var, min=1e-6)  # ensure numerical stability
         return new_mu, new_var
 
     def forward(self, lh_params, p_params):
@@ -241,7 +233,7 @@ class MergeBlock(nn.Module):
         p_var = torch.exp(p_lv)
 
         mu, var = self.merge_gaussians(lh_mu, lh_var, p_mu, p_var)
-        lv = torch.log(var + 1e-8)
+        lv = torch.log(var)
         return torch.cat([mu, lv], dim=1)
     
 
@@ -261,7 +253,6 @@ class LadderVAE(nn.Module):
         decoder_layers = []
         for i in range(len(z_dims)):
             input_dim = final_dim * (len(z_dims)-i)
-            # print('input_dim:', input_dim)
             decoder_layers.append(TopDownBlock(z_dims[i], channels[i+1], channels[i], 
                                                input_dim=input_dim, 
                                                num_blocks=num_blocks, 
@@ -272,76 +263,115 @@ class LadderVAE(nn.Module):
 
         self.merge_block = MergeBlock()
 
-        self.kl = 0
+        # self.kl = 0
+        self.kl_per_layer = []
 
-    def reparameterization_trick(self, mu, lv):
+
+    def reparameterization_trick(self, params):
+        """
+        Reparameterization trick for sampling from the latent space.
+
+        Args:
+            params: Tensor of shape (B, 2*z_dim), mean and logvar of the latent space.
+
+        Returns:
+            z: Tensor of shape (B, z_dim), sampled latent variables.
+        """
+        mu, lv = params.chunk(2, dim=1)
         return mu + torch.exp(0.5 * lv) * torch.randn_like(lv)
 
-    def compute_kl_vectorized(self, mu, var):
+    def compute_kl(self, posterior_params, prior_params):
         """
-        Computes KL divergence between q = N(mu, diag(var)) and p = N(0, I).
-        
+        Computes KL divergence between q = N(mu1, diag(var1)) and p = N(mu2, diag(var2)).
         Args:
-            mu: Tensor of shape (B, z_dim), mean of q.
-            var: Tensor of shape (B, z_dim), diagonal elements of covariance (variances).
-        
+            posterior_params: Tensor of shape (B, 2*z_dim), mean and logvar of q.
+            prior_params: Tensor of shape (B, 2*z_dim), mean and logvar of p.
         Returns:
-            kl: Scalar, KL divergence after reduction (sum or mean over z_dim).
+            kl: Scalar, KL divergence after reduction (sum over z_dim, mean over batch).
         """
-        var = torch.clamp(var, min=1e-6)
-        
-        # Compute KL terms: 0.5 * (var + mu^2 - 1 - log(var))
-        kl_per_dim = 0.5 * (var + mu**2 - 1 - torch.log(var))  # Shape: (B, z_dim)
-        
-        # Reduce over z_dim
-        kl = kl_per_dim.sum(dim=1)  # Shape: (B,)
-        
-        # Reduce over batch
-        kl = kl.mean(dim=0)  # Scalar
-        
-        # Apply final reduction (sum or mean over z_dim)
-        self.kl = kl.mean()
-        # self.kl = kl.sum() if self.kl_reduction == 'sum' else kl.mean()
+        mu_q, lv_q = posterior_params.chunk(2, dim=1)
+        mu_p, lv_p = prior_params.chunk(2, dim=1)
+
+        var_q = torch.exp(lv_q).clamp(min=1e-6)
+        var_p = torch.exp(lv_p).clamp(min=1e-6)
+
+        # KL per dimension
+        kl_per_dim = 0.5 * (
+            lv_p - lv_q                                     # log(sigma_p^2 / sigma_q^2)
+            + (var_q + (mu_q - mu_p).pow(2)) / var_p        # variance + squared diff
+            - 1.0
+        )
+
+        # sum over dimensions, mean over batch
+        kl = kl_per_dim.sum(dim=1).mean()
+        return kl
 
     def forward(self, x):
         d = x
         bu_params = []
         i = 0
         for layer in self.encoder:
-            # print('i:', i)
             d, z_params = layer(d)
             bu_params.append(z_params)
             i += 1
 
+        # calculate the KL divergence for each layer
+        # self.kl = 0
+        self.kl_per_layer = []
+
+        zeros = torch.zeros((x.size(0), bu_params[-1].size(1)//2), device=x.device)
+        ones = torch.ones((x.size(0), bu_params[-1].size(1)//2), device=x.device)
+        iso = torch.cat([zeros, ones], dim=1)
+
+        # KL against an isotropic Gaussian
+        layer_kl = self.compute_kl(bu_params[-1], iso)
+        
+        # self.kl += layer_kl
+        self.kl_per_layer.append(layer_kl)
+
         # sample from top-level latent
-        mu, lv = bu_params[-1].chunk(2, dim=1)
-        self.compute_kl_vectorized(mu, torch.exp(lv))
-        z_top = self.reparameterization_trick(mu, lv)
+        z_top = self.reparameterization_trick(bu_params[-1])
 
         for i, layer in enumerate(self.decoder):
             if i == 0:
                 # for the top block, take only the top-level latent sample
                 # and return the posterior sample
                 d, td_params = layer(z_top)
+                
                 posterior_params = self.merge_block(bu_params[-2], td_params)
-                z_merged = self.reparameterization_trick(*posterior_params.chunk(2, dim=1))
+                
+                # kl between posterior and top-down prior
+                layer_kl = self.compute_kl(posterior_params, td_params)
+                self.kl_per_layer.append(layer_kl)
+
+                z_merged = self.reparameterization_trick(posterior_params)
 
             elif i > 0 and i < len(self.decoder) - 1:
                 # for all top-down blocks in the middle, take the posterior sample from the
                 # layer above, and then return this layer's posterior sample
                 d, td_params = layer(z_merged, d)
+                
                 posterior_params = self.merge_block(bu_params[-2-i], td_params)
-                z_merged = self.reparameterization_trick(posterior_params.chunk(2, dim=1))
-            
+                
+                layer_kl = self.compute_kl(posterior_params, td_params)
+                self.kl_per_layer.append(layer_kl)
+
+                z_merged = self.reparameterization_trick(posterior_params)
+
             else:
                 # for the bottom block, take the posterior sample from the layer above
                 # and return the final image
                 d, _ = layer(z_merged, d)
+
+        self.kl_per_layer = self.kl_per_layer[::-1]  # reverse to match order of z1, z2, ...
+
         return d
 
-    def criterion(self, clean_x):
+    def criterion(self, clean_x, img_dim):
+        # kl_weights = kl_weights.to(clean_x.device)
         prediction = self.forward(clean_x)
         # Compute the loss
         mse_loss = F.mse_loss(prediction, clean_x, reduction="mean")
-        weighted_mse_loss = mse_loss.mean()
-        return weighted_mse_loss, self.kl
+        weighted_mse_loss = mse_loss.mean() * img_dim ** 2 / 2
+        # return weighted_mse_loss, torch.dot(self.kl_per_layer, kl_weights)
+        return weighted_mse_loss, self.kl_per_layer

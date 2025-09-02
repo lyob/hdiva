@@ -2,7 +2,7 @@ import os
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
-from utils.dataset_utils import DataOnlyDataset
+from a_datasets.custom_dataset_classes import DataOnlyDataset
 
 # ------------------------------- cats dataset ------------------------------- #
 def get_cats_dataset(train_split_percentage:float=0.8, from_tmp=False):

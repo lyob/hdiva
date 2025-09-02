@@ -1,5 +1,5 @@
-from b_models.lvae import LadderVAE
-from b_models.vae3 import VAE
+from b_models.lvae.lvae import LadderVAE
+from b_models.vae.vae3 import VAE
 
 def init_lvae(config):
     # Create the model

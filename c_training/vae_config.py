@@ -9,7 +9,7 @@ class VAE_Training_Config:
     z_dim: int = 10
 
     '''dataset parameters'''
-    dataset_name: str = "hdisks3"
+    dataset_name: str = "hdisks3_stochastic"
     dataset_size: int = 5e4
     
     '''Encoder/Decoder parameters'''
@@ -17,7 +17,7 @@ class VAE_Training_Config:
     channels: list[int] = field(default_factory=lambda: [1, 32, 32])
     
     '''training'''
-    num_epochs: int = 1000
+    num_epochs: int = 2000
     train_batch_size_per_gpu: int = 512
     learning_rate_init: float = 1e-3
     learning_rate_final: float = 1e-3

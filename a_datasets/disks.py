@@ -1,4 +1,4 @@
-import wandb
+# import wandb
 import torch
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
@@ -9,32 +9,17 @@ from torch import Tensor
 #                                 disk dataset                                 #
 # ---------------------------------------------------------------------------- #
 
-def load_disks_dataset_from_wandb():
-    api = wandb.Api()
-    entity='blyo'
-    project_name='ddpm_conv'
-    dataset_name = "disks-32x32-soft-50000"
-    dataset_alias = 'v3'
-    dataset_artifact = api.artifact(f'{entity}/{project_name}/{dataset_name}:{dataset_alias}')
-    dataset_path = dataset_artifact.download()
-    dataset_description = dataset_artifact.metadata
-    dataset = torch.load(f'{dataset_path}/training_data')
-    return dataset, dataset_description
-
-
-class DiskDataset(Dataset):
-    def __init__(self, data):
-        self.data = data
-        self.transform = lambda x: x * 2 - 1  # normalize to [-1, 1]
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        # Apply transformation if needed
-        data = self.transform(self.data[idx])
-        return data
-
+# def load_disks_dataset_from_wandb():
+#     api = wandb.Api()
+#     entity='blyo'
+#     project_name='ddpm_conv'
+#     dataset_name = "disks-32x32-soft-50000"
+#     dataset_alias = 'v3'
+#     dataset_artifact = api.artifact(f'{entity}/{project_name}/{dataset_name}:{dataset_alias}')
+#     dataset_path = dataset_artifact.download()
+#     dataset_description = dataset_artifact.metadata
+#     dataset = torch.load(f'{dataset_path}/training_data')
+#     return dataset, dataset_description
 
 def make_disk_vectorized(
     img_size: Union[int, Tuple[int, int], torch.Size],
@@ -222,15 +207,3 @@ def create_one_circle_fractional_2(c_x, c_y, foreground=1, outer_radius=10, tran
     )
     
     return disk, c_x, c_y, background
-
-
-# using Dataset
-class CustomTensorDataset(torch.utils.data.Dataset):
-    def __init__(self, tensor):
-        self.tensor = tensor
-    
-    def __getitem__(self, index):
-        return self.tensor[index]
-    
-    def __len__(self):
-        return self.tensor.shape[0]

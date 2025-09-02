@@ -1,3 +1,5 @@
 */__pycache__
 c_training/cluster_logs
 c_training/lightning_checkpoints
+c_training/scripts/slurm-*.out
+c_training/lightning_logs

@@ -46,10 +46,8 @@ class EncoderConvBlock(nn.Module):
         return ((input_dim - kernel + 2*padding)//stride + 1)
     
     def forward(self, x):
-        print(x.shape)
         for i in range(len(self.conv_network)):
             x = self.conv_network[i](x)
-            print(x.shape)
         
         x = torch.flatten(x, start_dim=1)
         mu = self.linear_mu(x)
@@ -102,14 +100,11 @@ class SpatialEncoderConvBlock(nn.Module):
 
     def forward(self, x):
         d = x
-        # print(d.shape)
         for i in range(len(self.conv_network)):
             d = self.conv_network[i](d)
-            # print(d.shape)
 
         mu = torch.flatten(self.mu_readout(d), start_dim=1)
         var = torch.flatten(self.var_readout(d), start_dim=1)
-        # print(mu.shape)
         return d, mu, var
 
 

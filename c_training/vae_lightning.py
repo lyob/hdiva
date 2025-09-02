@@ -17,7 +17,7 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, Callback
 
 # importing dataset
-from a_datasets.hdisks3 import load_dataset
+from a_datasets.dataset_utils import load_dataset
 from dataclasses import asdict
 
 # import model

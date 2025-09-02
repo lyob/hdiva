@@ -7,49 +7,8 @@ import sysrsync
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from datasets import load_dataset
-from utils.cats import get_cats_dataset
-
-class DataOnlyDataset(torch.utils.data.Dataset):
-    '''makes it such that we can return only the data from the dataset and not the labels. For use with the cats dataset.'''
-    def __init__(self, subset):
-        self.subset = subset
-        
-    def __getitem__(self, index):
-        # Get the (image, label) pair from the subset
-        image, _ = self.subset[index]
-        # Return only the image
-        return image
-    
-    def __len__(self):
-        return len(self.subset)
-
-
-class CustomDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, transform, with_label=True):
-        self.dataset = dataset
-        self.transform = transform
-        self.with_label = with_label
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        item = self.dataset[idx]
-        image = self.transform(item["image"])
-        if not self.with_label:
-            return image
-        # Extract labels from the item, excluding the image key
-        # Assuming the item is a dictionary with keys "image" and other attributes
-        else:
-            # Convert labels to integers if they are not already
-            # Assuming item is a dictionary with keys "image" and other attributes
-            if isinstance(item, dict):
-                labels = {k: v for k, v in item.items() if k != "image"}
-            elif isinstance(item, list):
-                labels = {f"attr_{i}": v for i, v in enumerate(item) if i != 0}
-            else:
-                raise TypeError("Item must be a dictionary or a list")
-            return image, labels
+from a_datasets.cats import get_cats_dataset
+from a_datasets.custom_dataset_classes import *
 
 def load_dataset_from_hf(dataset_type:str, with_label:bool=False, transform=None, dataset_size:int=0, batch_size:int=None, num_workers:int=4, shuffle:bool=True, img_dim:int=64):
     if dataset_type == "celeba":
@@ -114,3 +73,31 @@ def move_celeba_data_to_tmp(dataset_resolution:int):
     # dataset_shape = int(dataset_name.split('-')[-2].split('x')[0])
     sysrsync.run(source=f'datasets/celeba/attribute_images_{dataset_resolution}x{dataset_resolution}.pt', 
                  destination=f'/tmp/attribute_images_{dataset_resolution}x{dataset_resolution}.pt')
+
+
+def load_dataset(config):
+    if config.dataset_name == "hdisks3":
+        from a_datasets.hdisks3 import random_two_disk_dataset
+        data = random_two_disk_dataset(
+                    img_size=config.input_dim,
+                    outer_radius=4,
+                    transition_width=2,
+                    d=10,
+                    num_imgs=config.dataset_size)[0]
+    elif config.dataset_name == 'hdisks3_stochastic':
+        from a_datasets.hdisks3_stochastic import random_two_disk_dataset
+        data = random_two_disk_dataset(
+                    img_size=config.input_dim,
+                    outer_radius=4,
+                    transition_width=2,
+                    d=10,
+                    num_imgs=config.dataset_size)[0]
+    else:
+        raise ValueError(f"Dataset {config.dataset_name} not recognized")
+    dataset = DiskDataset(data)
+    dataloader = DataLoader(dataset, 
+                    batch_size=config.train_batch_size_per_gpu, 
+                    shuffle=True, 
+                    num_workers=7,
+                    generator=torch.Generator().manual_seed(config.seed))
+    return dataloader

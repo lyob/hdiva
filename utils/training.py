@@ -1,6 +1,8 @@
 import os
+import numpy as np
 import json
 import math
+import torch
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -55,8 +57,8 @@ def rename_checkpoint_folder(
 def set_kl_weight(config, current_epoch):
     kl_annealing_schedule = config.kl_annealing_schedule
     kl_annealing_epochs = config.kl_annealing_epochs
-    kl_weight_min = config.kl_weight_min
-    kl_weight_max = config.kl_weight_max
+    kl_weight_min = config.kl_weight_min if hasattr(config, 'kl_weight_min') else np.array(config.kl_weights_min)
+    kl_weight_max = config.kl_weight_max if hasattr(config, 'kl_weight_max') else np.array(config.kl_weights_max)
 
     progress = min(1, current_epoch / (kl_annealing_epochs - 1))  # Normalize to [0, 1]
 

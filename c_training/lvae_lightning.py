@@ -1,24 +1,18 @@
 import sys
-import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torchvision import transforms
-import os
-import math
-import json
-import wandb
+from dataclasses import asdict
+import numpy as np
 
 # import lightning
-from lightning.pytorch import Trainer, LightningModule, seed_everything
-import lightning as L
-from lightning.pytorch.strategies import DeepSpeedStrategy
-from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint, Callback
+from lightning.pytorch import LightningModule
+# from lightning.pytorch import Trainer, LightningModule, seed_everything
+# import lightning as L
+# from lightning.pytorch.strategies import DeepSpeedStrategy
+# from lightning.pytorch.loggers import WandbLogger
+# from lightning.pytorch.callbacks import ModelCheckpoint, Callback
 
 # importing dataset
-from a_datasets.hdisks3 import load_dataset
-from dataclasses import asdict
+from a_datasets.dataset_utils import load_dataset
 
 # import model
 from utils.model_init import init_lvae
@@ -37,18 +31,30 @@ class Lightning_Model(LightningModule):
         self.criterion = self.model.criterion
         self.save_hyperparameters(asdict(config))
         self.strict_loading = False
-        self.current_kl_weight = 0
+        self.current_kl_weights = np.zeros((2))
 
     def training_step(self, batch, batch_idx):
         '''Calculates the loss at every step, for a given criterion'''
 
-        mse_loss, kl_loss = self.criterion(batch)
-        total_loss = mse_loss + self.current_kl_weight * kl_loss
+        mse_loss, kl_losses = self.criterion(batch, self.config.input_dim)
+        # print("current_kl_weights:", self.current_kl_weights)
+
+        # kl_losses is a list of tensors. multiply each item in the list with the corresponding element in the tensor self.current_kl_weights and sum the result
+        # weighted_kl_losses = torch.dot(kl_losses, self.current_kl_weights)
+
+        weighted_kl = []
+        for loss, weight in zip(kl_losses, self.current_kl_weights):
+            weighted_kl.append(loss * weight)  # numpy scalar is auto-converted
+        weighted_kl = sum(weighted_kl)
+
+        total_loss = mse_loss + weighted_kl
 
         # logging every training step
-        self.log("mse_loss", mse_loss.item(), on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-        self.log("kl_loss", kl_loss.item(), on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-        self.log("train_loss", total_loss.item(), on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("mse_loss", mse_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        for i, kl_loss in enumerate(kl_losses):
+            self.log(f"kl_loss_z{i+1}", kl_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log(f"kl_loss_total", weighted_kl.sum().item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("train_loss", total_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
         lr = self.optimizers().param_groups[0]['lr']
         self.log("learning_rate", lr, on_step=True, on_epoch=False, prog_bar=True, logger=True)
@@ -61,7 +67,7 @@ class Lightning_Model(LightningModule):
 
     def on_train_epoch_start(self):
         '''Update the KL weight based on the current epoch'''
-        self.current_kl_weight = set_kl_weight(self.config, self.current_epoch)
+        self.current_kl_weights = set_kl_weight(self.config, self.current_epoch)
 
     def train_dataloader(self):
         '''get the dataloader for the training dataset'''
