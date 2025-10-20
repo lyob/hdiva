@@ -1,6 +1,13 @@
 import os
 import wandb
 import torch
+from b_models.lvae.lvae3 import LadderVAE
+from b_models.vae.vae3 import VAE
+from c_training.lvae_lightning import Lightning_Model as Lightning_Model_LVAE
+from c_training.lvae_config import LVAE_Training_Config
+from c_training.vae_lightning import Lightning_Model as Lightning_Model_VAE
+from c_training.vae_config import VAE_Training_Config
+from utils.config_utils import make_config_from_dict
 
 def get_artifact_name(
         model_num:int = 63,
@@ -34,3 +41,18 @@ def get_artifact_name(
     # config = model_artifact.metadata
     config = run.config
     return model_path, artifact, config
+
+
+def load_from_wandb(project_name:str, model_number:int, artifact_id='latest'):
+    '''load model from wandb artifact'''
+    if project_name == 'lvae':
+        config_obj = LVAE_Training_Config
+        lightning_model = Lightning_Model_LVAE
+    elif project_name == 'vae':
+        config_obj = VAE_Training_Config
+        lightning_model = Lightning_Model_VAE
+    model_path, artifact, config = get_artifact_name(model_number, artifact_id, project_name=project_name)
+    cfg = make_config_from_dict(config_obj, config)
+    lightning_model = lightning_model.load_from_checkpoint(model_path, config=cfg)
+    model = lightning_model.model
+    return model

@@ -7,7 +7,7 @@
 # This should always be 1!
 #SBATCH --ntasks-per-node=1
 # This is the physical number of GPUs per node
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 # You can vary that one if you see you need more or less CPU cores per gpu
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=1:00:00

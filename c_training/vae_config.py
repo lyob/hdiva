@@ -9,7 +9,7 @@ class VAE_Training_Config:
     z_dim: int = 10
 
     '''dataset parameters'''
-    dataset_name: str = "hdisks3_stochastic"
+    dataset_name: str = "hdisks3"
     dataset_size: int = 5e4
     
     '''Encoder/Decoder parameters'''
@@ -19,16 +19,16 @@ class VAE_Training_Config:
     '''training'''
     num_epochs: int = 2000
     train_batch_size_per_gpu: int = 512
-    learning_rate_init: float = 1e-3
-    learning_rate_final: float = 1e-3
+    learning_rate_init: float = 2e-3
+    learning_rate_final: float = 2e-3
     num_warmup_steps: int = 1000
     seed: int = 43
 
     '''kl schedule'''
     kl_annealing_schedule: str = "constant"
     kl_annealing_epochs: int = 1000
-    kl_weight_min: float = 1e-8
-    kl_weight_max: float = 1e-8
+    kl_weight_min: float = 1
+    kl_weight_max: float = 1
 
     '''cluster'''
     strategy: str = "ddp"  # "ddp" or "deepspeed_stage_2"

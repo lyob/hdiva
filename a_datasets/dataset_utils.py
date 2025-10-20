@@ -75,7 +75,7 @@ def move_celeba_data_to_tmp(dataset_resolution:int):
                  destination=f'/tmp/attribute_images_{dataset_resolution}x{dataset_resolution}.pt')
 
 
-def load_dataset(config):
+def load_dataset(config, load_dataloader:bool=False):
     if config.dataset_name == "hdisks3":
         from a_datasets.hdisks3 import random_two_disk_dataset
         data = random_two_disk_dataset(
@@ -94,10 +94,15 @@ def load_dataset(config):
                     num_imgs=config.dataset_size)[0]
     else:
         raise ValueError(f"Dataset {config.dataset_name} not recognized")
-    dataset = DiskDataset(data)
+    return data
+
+
+def create_dataloader(config, data_tensor, shuffle:bool=True, num_workers:int = 0):
+    dataset = DiskDataset(data_tensor)
     dataloader = DataLoader(dataset, 
                     batch_size=config.train_batch_size_per_gpu, 
-                    shuffle=True, 
-                    num_workers=7,
+                    shuffle=shuffle, 
+                    num_workers=num_workers,  # must be 0 for gpu training
+                    pin_memory=False,  # no need, already on GPU
                     generator=torch.Generator().manual_seed(config.seed))
     return dataloader

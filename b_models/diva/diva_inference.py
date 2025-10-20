@@ -1,11 +1,6 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributions as dist
-from torch.autograd import grad
-import math
 import numpy as np
-from celeba_color.models.diva import DiVA
+from b_models.diva.diva_module import DiVA
 
 # ------------------------------ inference class ----------------------------- #
 class DiVA_Inference(DiVA):

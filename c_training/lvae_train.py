@@ -72,11 +72,10 @@ def main():
     # Log hyperparameters to wandb
     training_config = {
         "seed" : config.seed,
-        # "strategy" : config.strategy,
+        "strategy" : config.strategy,
         "num_epochs" : config.num_epochs,
         "batch_size_per_gpu" : config.train_batch_size_per_gpu,
         "precision" : config.precision,
-        # "model_config" : asdict(config)
     }
     wandb_logger.log_hyperparams(training_config)
 

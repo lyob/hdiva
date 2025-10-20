@@ -53,6 +53,23 @@ def rename_checkpoint_folder(
         checkpoint_callback.dirpath = new_folder
         print(f"Updated checkpoint callback dirpath to {new_folder}")
 
+def set_lr(config, current_epoch):
+    lr_init = config.lr_init
+    lr_final = config.lr_final
+    if current_epoch >= config.lr_num_warmup_epochs:
+        return config.lr_final
+
+    if config.lr_schedule == "constant":
+        lr = lr_init
+    elif config.lr_schedule == "linear":
+        lr = lr_init + (lr_final - lr_init) * (current_epoch / config.lr_num_warmup_epochs)
+    elif config.lr_schedule == "cosine":
+        lr = lr_final + 0.5 * (lr_init - lr_final) * (1 + math.cos(math.pi * current_epoch / config.lr_num_warmup_epochs))
+    elif config.lr_schedule == "exponential":
+        lr = lr_init * (lr_final / lr_init) ** (current_epoch / config.lr_num_warmup_epochs)
+    else:
+        raise ValueError(f"Unknown lr_schedule: {config.lr_schedule}")
+    return lr
 
 def set_kl_weight(config, current_epoch):
     kl_annealing_schedule = config.kl_annealing_schedule
@@ -70,8 +87,8 @@ def set_kl_weight(config, current_epoch):
         cosine_term = 0.5 * (1 + math.cos(math.pi * progress))
         current_kl_weight = kl_weight_min + (kl_weight_max - kl_weight_min) * (1-cosine_term)
         current_kl_weight = min(max(current_kl_weight, kl_weight_min), kl_weight_max)
-    elif kl_annealing_schedule == "linear_in_log":
+    elif kl_annealing_schedule == "exponential":
         current_kl_weight = kl_weight_min * (kl_weight_max / kl_weight_min) ** progress
     else:
-        raise ValueError(f"Unknown kl_annealing_schedule: {kl_annealing_schedule}, expected 'constant' or 'linear' or 'cosine' or 'linear_in_log'")
+        raise ValueError(f"Unknown kl_annealing_schedule: {kl_annealing_schedule}, expected 'constant' or 'linear' or 'cosine' or 'exponential'")
     return current_kl_weight

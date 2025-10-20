@@ -5,111 +5,6 @@ import torch.nn.functional as F
 import math
 import torch.distributions as dist
 
-'''Variable Convolutional Encoder'''
-class EncoderConvBlock(nn.Module):
-    def __init__(
-            self, 
-            num_channels,
-            img_dim,
-            latent_dim, 
-            channels=[4, 8, 16], 
-            bias=True,
-        ):
-        super(EncoderConvBlock, self).__init__()
-        '''
-        image_dim: int, the dimension of the input image height or width'''
-        
-        self.channels = [num_channels, *channels]
-        self.ksp = [3, 2, 1]
-
-        '''first convolutional layer'''
-        # input: 1 x 32 x 32
-        # output: 4 x 16 x 16
-
-        self.conv_network = nn.ModuleList()
-        for idx in range(len(self.channels)-1):
-            self.conv_network.append(nn.Conv2d(self.channels[idx], self.channels[idx+1], *self.ksp, bias=bias))
-            self.conv_network.append(nn.ReLU())
-
-        self.layer_input_dim = img_dim
-        self.compute_projection_dim()
-        linear_input_dim = self.layer_input_dim**2 * self.channels[-1]
-        self.linear_mu = nn.Linear(linear_input_dim, latent_dim, bias=bias)
-        self.linear_sig = nn.Linear(linear_input_dim, latent_dim, bias=bias)
-
-    def compute_projection_dim(self):
-        for i in range(len(self.channels)-1):
-            self.layer_input_dim = self.compute_output_dims(self.layer_input_dim, *self.ksp)
-        
-    def compute_output_dims(self, input_dim, kernel, stride, padding):
-        '''calculate the output dimensions of a convolutional layer, for a given input dimension and convolutional settings'''
-        return ((input_dim - kernel + 2*padding)//stride + 1)
-    
-    def forward(self, x):
-        for i in range(len(self.conv_network)):
-            x = self.conv_network[i](x)
-        
-        x = torch.flatten(x, start_dim=1)
-        mu = self.linear_mu(x)
-        sigma = F.softplus(self.linear_sig(x)) + 1e-6  # ensure sigma is positive
-        z = mu + sigma*torch.randn_like(mu)
-        var = sigma**2
-        return z, mu, var
-
-
-'''Variable Convolutional Encoder'''
-class SpatialEncoderConvBlock(nn.Module):
-    def __init__(
-            self, 
-            input_dim,
-            z_dim, 
-            c_in,
-            channels=[8, 16],
-            bias=True,
-        ):
-        super(SpatialEncoderConvBlock, self).__init__()
-        '''
-        image_dim: int, the dimension of the input image height or width'''
-        
-        self.channels = [c_in, *channels]
-        self.ksp = [3, 2, 1]
-
-        '''first convolutional layer'''
-        # input: 1 x 32 x 32
-        # output: 4 x 16 x 16
-
-        self.conv_network = nn.ModuleList()
-        for idx in range(len(self.channels)-1):
-            self.conv_network.append(nn.Conv2d(self.channels[idx], self.channels[idx+1], *self.ksp, bias=bias))
-            self.conv_network.append(nn.ReLU())
-
-        self.spatial_dim = input_dim
-        self.compute_projection_dim()
-
-        # now provide linear readouts that average over the spatial dimensions so we're only left with (B, latent_dim, 1, 1)
-        self.mu_readout = nn.Conv2d(self.channels[-1], z_dim, self.spatial_dim, bias=bias)
-        self.var_readout = nn.Conv2d(self.channels[-1], z_dim, self.spatial_dim, bias=bias)
-
-    def compute_projection_dim(self):
-        for i in range(len(self.channels)-1):
-            self.spatial_dim = self.compute_output_dims(self.spatial_dim, *self.ksp)
-
-    def compute_output_dims(self, input_dim, kernel, stride, padding):
-        '''calculate the output dimensions of a convolutional layer, for a given input dimension and convolutional settings'''
-        return ((input_dim - kernel + 2*padding)//stride + 1)
-
-    def forward(self, x):
-        d = x
-        for i in range(len(self.conv_network)):
-            d = self.conv_network[i](d)
-
-        mu = torch.flatten(self.mu_readout(d), start_dim=1)
-        var = torch.flatten(self.var_readout(d), start_dim=1)
-        return d, mu, var
-
-
-
-
 # ---------------------------- 2 latent layer LVAE --------------------------- #
 class ConvBlock(nn.Module):
     def __init__(
@@ -168,8 +63,6 @@ class BottomUpBlock(nn.Module):
     def forward(self, x):
         d = self.conv_block(x)
         z_params = self.compress_block(d)
-        # mu, lv = z_params.chunk(2, dim=1)
-        # return d, mu, lv
         return d, z_params
 
 
@@ -211,29 +104,26 @@ class MergeBlock(nn.Module):
     def __init__(self):
         super(MergeBlock, self).__init__()
 
-    def merge_gaussians(self, mu1, var1, mu2, var2):
-        var1 = torch.clamp(var1, min=1e-6)
-        var2 = torch.clamp(var2, min=1e-6)
-        precision1 = 1 / var1
-        precision2 = 1 / var2
-        
+    def merge_gaussians(self, mu1, lv1, mu2, lv2):
+        precision1 = torch.exp(-lv1)
+        precision2 = torch.exp(-lv2)
+
+        # combined precision
+        new_precision = precision1 + precision2
+
         # combined mu
-        new_mu = (mu1 * precision1 + mu2 * precision2) / (precision1 + precision2)
+        new_mu = (mu1 * precision1 + mu2 * precision2) / new_precision
 
         # combined variance
-        new_var = 1 / (precision1 + precision2)
-        new_var = torch.clamp(new_var, min=1e-6)  # ensure numerical stability
-        return new_mu, new_var
+        new_var = (1. / new_precision).clamp(min=1e-6)  # ensure numerical stability
+        new_lv = torch.log(new_var)
+        return new_mu, new_lv
 
     def forward(self, lh_params, p_params):
         lh_mu, lh_lv = lh_params.chunk(2, dim=1)
         p_mu, p_lv = p_params.chunk(2, dim=1)
 
-        lh_var = torch.exp(lh_lv)
-        p_var = torch.exp(p_lv)
-
-        mu, var = self.merge_gaussians(lh_mu, lh_var, p_mu, p_var)
-        lv = torch.log(var)
+        mu, lv = self.merge_gaussians(lh_mu, lh_lv, p_mu, p_lv)
         return torch.cat([mu, lv], dim=1)
     
 
@@ -319,12 +209,9 @@ class LadderVAE(nn.Module):
         # self.kl = 0
         self.kl_per_layer = []
 
-        zeros = torch.zeros((x.size(0), bu_params[-1].size(1)//2), device=x.device)
-        ones = torch.ones((x.size(0), bu_params[-1].size(1)//2), device=x.device)
-        iso = torch.cat([zeros, ones], dim=1)
-
         # KL against an isotropic Gaussian
-        layer_kl = self.compute_kl(bu_params[-1], iso)
+        zeros = torch.zeros_like(bu_params[-1])  # both the mean and logvar should be 0 for isotropic gaussians
+        layer_kl = self.compute_kl(bu_params[-1], zeros)
         
         # self.kl += layer_kl
         self.kl_per_layer.append(layer_kl)
@@ -339,12 +226,12 @@ class LadderVAE(nn.Module):
                 d, td_params = layer(z_top)
                 
                 posterior_params = self.merge_block(bu_params[-2], td_params)
+                z_merged = self.reparameterization_trick(posterior_params)  # sample from posterior
                 
-                # kl between posterior and top-down prior
+                # kl between bottom-up likelihood and top-down prior
                 layer_kl = self.compute_kl(posterior_params, td_params)
                 self.kl_per_layer.append(layer_kl)
 
-                z_merged = self.reparameterization_trick(posterior_params)
 
             elif i > 0 and i < len(self.decoder) - 1:
                 # for all top-down blocks in the middle, take the posterior sample from the
@@ -352,11 +239,11 @@ class LadderVAE(nn.Module):
                 d, td_params = layer(z_merged, d)
                 
                 posterior_params = self.merge_block(bu_params[-2-i], td_params)
+                z_merged = self.reparameterization_trick(posterior_params)
                 
+                # kl computation
                 layer_kl = self.compute_kl(posterior_params, td_params)
                 self.kl_per_layer.append(layer_kl)
-
-                z_merged = self.reparameterization_trick(posterior_params)
 
             else:
                 # for the bottom block, take the posterior sample from the layer above

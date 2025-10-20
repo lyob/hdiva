@@ -5,19 +5,14 @@ import numpy as np
 
 # import lightning
 from lightning.pytorch import LightningModule
-# from lightning.pytorch import Trainer, LightningModule, seed_everything
-# import lightning as L
-# from lightning.pytorch.strategies import DeepSpeedStrategy
-# from lightning.pytorch.loggers import WandbLogger
-# from lightning.pytorch.callbacks import ModelCheckpoint, Callback
 
 # importing dataset
-from a_datasets.dataset_utils import load_dataset
+from a_datasets.dataset_utils import load_dataset, create_dataloader
 
-# import model
+# import model and training utils
 from utils.model_init import init_lvae
+from utils.training import set_kl_weight, set_lr
 
-from utils.training import set_kl_weight
 
 # Define the Lightning Module
 class Lightning_Model(LightningModule):
@@ -26,54 +21,71 @@ class Lightning_Model(LightningModule):
 
         # ------------------------------ training params ----------------------------- #
         self.config = config
-        # self.config_dict = asdict(config)  # turn the object attributes into a dictionary
-        self.model = init_lvae(config)
-        self.criterion = self.model.criterion
         self.save_hyperparameters(asdict(config))
+
+        # set up model
+        self.model = init_lvae(config)
         self.strict_loading = False
         self.current_kl_weights = np.zeros((2))
+        self.train_data = None
+
+    def setup(self, stage: str):
+        """
+        Setup function called at the beginning of fit and test
+        """
+        if stage == 'fit':
+            # we can set up anything required for training here
+            print("Loading and moving dataset to GPU...")
+            # 1. Generate the entire dataset on the CPU
+            data_tensor_cpu = load_dataset(self.config)
+            
+            # 2. Move the entire tensor to the correct device (GPU) and store it
+            self.train_data = data_tensor_cpu.to(self.device)
+            print(f"Dataset moved to {self.train_data.device}")
+
+    def train_dataloader(self):
+        """
+        Create a DataLoader that samples from the pre-loaded GPU tensor.
+        """
+        dataloader = create_dataloader(self.config, self.train_data)
+        return dataloader
 
     def training_step(self, batch, batch_idx):
         '''Calculates the loss at every step, for a given criterion'''
+        total_loss, mse_loss, weighted_kl = self.model.criterion(batch, self.current_kl_weights)
 
-        mse_loss, kl_losses = self.criterion(batch, self.config.input_dim)
-        # print("current_kl_weights:", self.current_kl_weights)
-
-        # kl_losses is a list of tensors. multiply each item in the list with the corresponding element in the tensor self.current_kl_weights and sum the result
-        # weighted_kl_losses = torch.dot(kl_losses, self.current_kl_weights)
-
-        weighted_kl = []
-        for loss, weight in zip(kl_losses, self.current_kl_weights):
-            weighted_kl.append(loss * weight)  # numpy scalar is auto-converted
-        weighted_kl = sum(weighted_kl)
-
-        total_loss = mse_loss + weighted_kl
+        log_vars = dict(
+            prog_bar=True,
+            logger=True,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
 
         # logging every training step
-        self.log("mse_loss", mse_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-        for i, kl_loss in enumerate(kl_losses):
-            self.log(f"kl_loss_z{i+1}", kl_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-        self.log(f"kl_loss_total", weighted_kl.sum().item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-        self.log("train_loss", total_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("mse_loss", mse_loss.item(), **log_vars)
+        for i, kl_loss in enumerate(self.model.kl_per_layer):
+            self.log(f"kl_loss_z{i+1}", kl_loss.item(), **log_vars)
+        self.log(f"kl_loss_total", weighted_kl.sum().item(), **log_vars)
+        self.log("train_loss", total_loss.item(), **log_vars)
+        self.log("kl weight (z1)", self.current_kl_weights[0], **log_vars)
+        self.log("kl weight (z2)", self.current_kl_weights[1], **log_vars)
 
         lr = self.optimizers().param_groups[0]['lr']
-        self.log("learning_rate", lr, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        self.log("learning_rate", lr, **log_vars)
         return total_loss
 
     def configure_optimizers(self):
         '''Define optimizer'''
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate_init)
-        return optimizer
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.lr_init)
+
+        lr_lambda = lambda epoch: set_lr(self.config, epoch) / self.config.lr_init
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+        return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
 
     def on_train_epoch_start(self):
         '''Update the KL weight based on the current epoch'''
         self.current_kl_weights = set_kl_weight(self.config, self.current_epoch)
-
-    def train_dataloader(self):
-        '''get the dataloader for the training dataset'''
-        dataloader = load_dataset(self.config)
-        # batch size is gradient_accumulation_steps * train_micro_batch_size_per_gpu * num_gpus_per_node = 1 * 16 * 20 = 320
-        return dataloader
 
     def on_load_checkpoint(self, checkpoint):
         """Fix the checkpoint loading issue for deepspeed."""
@@ -83,3 +95,6 @@ class Lightning_Model(LightningModule):
         state_dict = {k.partition('module.')[2]: state_dict[k] for k in state_dict.keys()}
         checkpoint['state_dict'] = state_dict
         return
+    
+
+# self.lr = set_lr(self.config, self.current_epoch)

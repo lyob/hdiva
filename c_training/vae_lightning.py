@@ -42,13 +42,13 @@ class Lightning_Model(LightningModule):
     def training_step(self, batch, batch_idx):
         '''Calculates the loss at every step, for a given criterion'''
 
-        mse_loss, kl_loss = self.criterion(batch)
+        mse_loss, kl_loss = self.criterion(batch, self.config.input_dim)
         total_loss = mse_loss + self.current_kl_weight * kl_loss
 
         # logging every training step
-        self.log("mse_loss", mse_loss.item(), on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-        self.log("kl_loss", kl_loss.item(), on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
-        self.log("train_loss", total_loss.item(), on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("mse_loss", mse_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("kl_loss", kl_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("train_loss", total_loss.item(), on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
         lr = self.optimizers().param_groups[0]['lr']
         self.log("learning_rate", lr, on_step=True, on_epoch=False, prog_bar=True, logger=True)
