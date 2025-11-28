@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import Dataset
+import numpy as np
 
 class DataOnlyDataset(Dataset):
     '''makes it such that we can return only the data from the dataset and not the labels. For use with the cats dataset.'''
@@ -42,7 +43,7 @@ class CustomDataset(Dataset):
             else:
                 raise TypeError("Item must be a dictionary or a list")
             return image, labels
-
+        
 
 class DiskDataset(Dataset):
     def __init__(self, data):
@@ -59,11 +60,45 @@ class DiskDataset(Dataset):
 
 
 class CustomTensorDataset(Dataset):
-    def __init__(self, tensor):
-        self.tensor = tensor
-    
-    def __getitem__(self, index):
-        return self.tensor[index]
+    def __init__(self, dataset, transform):
+        self.dataset = dataset
+        self.transform = transform
     
     def __len__(self):
-        return self.tensor.shape[0]
+        return len(self.dataset)
+    
+    def __getitem__(self, index):
+        item = self.dataset[index]
+        return self.transform(item)
+
+
+class NpyDataset(Dataset):
+    def __init__(self, data_path, label_path, transform=None, data_only=False):
+        # mmap_mode='r' is the magic key here.
+        # It opens the file in read-only mode without loading it to RAM.
+        self.data = np.load(data_path, mmap_mode='r')
+        self.labels = np.load(label_path, mmap_mode='r')
+        self.transform = transform
+        self.data_only = data_only
+
+    def __len__(self):
+        return self.data.shape[0]
+
+    def __getitem__(self, idx):
+        # Accessing self.data[idx] only reads that specific slice from disk.
+        sample = self.data[idx]
+        label = self.labels[idx]
+
+        # Note: sample is currently a numpy memmap object. 
+        # Convert to copy if you plan to mutate it, or just to tensor.
+        sample = torch.from_numpy(np.array(sample)) # np.array() forces a copy into RAM
+        sample = sample.float()
+        label = torch.tensor(label)
+
+        if self.transform:
+            sample = self.transform(sample)
+
+        if self.data_only:
+            return sample
+        else:
+            return sample, label

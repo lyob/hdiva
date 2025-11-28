@@ -9,7 +9,7 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 
 import os
-from c_training.vae_config import VAE_Training_Config
+from c_training.configs.vae_config import VAE_Training_Config
 from c_training.vae_lightning import Lightning_Model
 from utils.training import rename_checkpoint_folder
 

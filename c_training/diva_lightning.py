@@ -1,7 +1,8 @@
 import torch
 import lightning as L
 from dataclasses import asdict
-from utils.config_utils import init_diva_model, load_pretrained_module_from_wandb
+from utils.wandb_utils import load_pretrained_module_from_wandb
+from utils.model_init import init_diva_model
 from utils.training import set_lr, set_kl_weight
 
 # Define the Lightning Module
@@ -45,16 +46,48 @@ class DiVA_Lightning(L.LightningModule):
         self.log("kl_loss", kl_loss.item(), **log_vars)
         self.log("current_kl_weight", self.current_kl_weight, **log_vars)
 
-        lr = self.optimizers().param_groups[0]['lr']
-        self.log("learning_rate", lr, **log_vars)
+        lrs = [pg['lr'] for pg in self.optimizers().param_groups]
+        self.log("learning_rate", lrs[0], **log_vars)
+        if len(lrs) > 1:
+            self.log("lr_encoder", lrs[1], **log_vars)
 
         return total_loss
 
     def configure_optimizers(self):
-        # Define optimizer
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.lr_init)
-        lr_lambda = lambda epoch: set_lr(self.config, epoch) / self.config.lr_init
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+        # Define optimizer with parameter groups
+        # Filter parameters that require gradients
+        denoiser_params = [p for p in self.model.denoiser.parameters() if p.requires_grad]
+        infnet_params = [p for p in self.model.infnet.parameters() if p.requires_grad]
+
+        optimizer_groups = []
+        lr_lambdas = []
+
+        # Denoiser group
+        if denoiser_params:
+            optimizer_groups.append({'params': denoiser_params, 'lr': self.config.lr_init})
+            lr_lambdas.append(lambda epoch: set_lr(self.config, epoch) / self.config.lr_init)
+
+        # Encoder (InfNet) group
+        if infnet_params:
+            optimizer_groups.append({'params': infnet_params, 'lr': self.config.encoder_lr_init})
+            
+            def encoder_schedule(epoch):
+                if epoch < self.config.encoder_warmup_epochs:
+                    return 1.0
+                elif epoch < self.config.encoder_warmup_epochs + self.config.encoder_convergence_epochs:
+                    # Convergence phase
+                    progress = (epoch - self.config.encoder_warmup_epochs) / self.config.encoder_convergence_epochs
+                    target_lr = self.config.encoder_lr_init + progress * (self.config.encoder_lr_final - self.config.encoder_lr_init)
+                    return target_lr / self.config.encoder_lr_init
+                else:
+                    # Converged to encoder_lr_final
+                    return self.config.encoder_lr_final / self.config.encoder_lr_init
+            
+            lr_lambdas.append(encoder_schedule)
+
+        optimizer = torch.optim.Adam(optimizer_groups)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambdas)
+        
         scheduler_config = {
             "scheduler": scheduler,
             "interval": "step",  # Update the learning rate at every step

@@ -23,14 +23,6 @@ class DiVA(DDPM):
         )
         self.infnet = infnet
         self.register_buffer('kl', torch.tensor(0,))  # KL divergence
-    
-    def compute_log_posterior(self, mu, logvar, z_sample):
-        z_dim = mu.shape[-1]
-        var = logvar.exp().clamp(min=1e-8)
-        quadratic_term = ((z_sample - mu)**2 / var).sum(dim=-1)
-        constant = z_dim * torch.log(torch.tensor(2.0 * torch.pi, device=mu.device, dtype=mu.dtype))
-        log_p_z = -0.5 * (constant + logvar.sum(dim=-1) + quadratic_term)
-        return log_p_z
 
     def compute_kl(self, mu, logvar):
         """
@@ -40,23 +32,64 @@ class DiVA(DDPM):
         Returns:
             kl: Scalar, KL divergence after reduction (sum over z_dim, mean over batch).
         """
-        kl_per_dim = 0.5 * (logvar.exp().clamp(min=1e-8) + mu.pow(2) - 1 - logvar)
+        kl_per_dim = 0.5 * (logvar.exp() + mu.pow(2) - 1 - logvar)
         # if reduction is sum, sum over dimensions, mean over batch
         return kl_per_dim.mean() if self.reduction == "mean" else kl_per_dim.sum(dim=1).mean()
+    
+    def compute_guidance_score(self, x_t, mu_t, logvar_t, z0_sample, num_samples=1, use_rademacher=True):
+        """Computing the guidance score using Hutchinson's trace estimator. 
+        Optimized for diagonal covariance matrix in z"""
+        assert x_t.requires_grad, "x_t must have requires_grad=True"
 
-    def compute_score(self, log_p_z, noisy_x):
-        # get the log posterior score
-        rec_score = torch.autograd.grad(log_p_z, noisy_x, torch.ones_like(log_p_z), retain_graph=True, create_graph=True)[0]
-        return rec_score
+        # mean term
+        var_t = logvar_t.exp().clamp(min=1e-8)
+        delta = z0_sample - mu_t
+        weighted_delta = delta / var_t
+        mean_scalar = (mu_t * weighted_delta).sum()
+        mean_grad = torch.autograd.grad(
+            outputs=mean_scalar,
+            inputs=x_t, 
+            retain_graph=True, 
+            create_graph=True
+        )[0]  # shape (B, x_dim)
+
+        # trace term
+        trace_grad = 0.
+        for _ in range(num_samples):
+            if use_rademacher:
+                # Rademacher: uniform over {-1, +1} (one of two choices)
+                v = torch.randint(
+                    low=0, high=2, 
+                    size=logvar_t.shape, 
+                    dtype=logvar_t.dtype, 
+                    device=logvar_t.device
+                ) * 2.0 - 1.0  # Maps {0,1} -> {-1, +1}
+            else:
+                # Gaussian: N(0, I)
+                v = torch.randn_like(logvar_t)
+
+            weighted_logvar = (v * logvar_t).sum()  # shape (B, z_dim)
+            jvp = torch.autograd.grad(
+                outputs=weighted_logvar,
+                inputs=x_t, 
+                retain_graph=True, 
+                create_graph=True
+            )[0]  # shape (B, x_dim)
+            trace_grad += jvp
+
+        logdet_term = trace_grad / num_samples
+        guidance_score = mean_grad - 0.5 * logdet_term
+        return guidance_score
     
     def get_z_score_and_kl(self, clean_x, noisy_x):
-        mu, logvar = self.infnet(clean_x)
-        z_sample = self.infnet.sample(mu, logvar)
+        mu_0, logvar_0 = self.infnet(clean_x)
+        z0_sample = self.infnet.sample(mu_0, logvar_0)
+        logvar_0 = logvar_0.clamp(min=-20, max=10)
+        kl = self.compute_kl(mu_0, logvar_0)
         mu_t, logvar_t = self.infnet(noisy_x)
-        log_p_z = self.compute_log_posterior(mu_t, logvar_t, z_sample)
-        kl = self.compute_kl(mu, logvar)
-        score = self.compute_score(log_p_z, noisy_x)
-        return score, kl
+        logvar_t = logvar_t.clamp(min=-20, max=10)
+        guidance_score = self.compute_guidance_score(noisy_x, mu_t, logvar_t, z0_sample)
+        return guidance_score, kl
 
     def forward(self, clean_x):
         '''forward pass of the model. Assume the clean images have already been normalized to [-1, 1].'''
@@ -67,8 +100,8 @@ class DiVA(DDPM):
         # t_tensor = self.sample_timesteps(B, self.num_timesteps, dist=self.timestep_dist, device=clean_x.device)
 
         # Add noise to the clean image
-        clean_x = clean_x.detach().requires_grad_(True)
-        # noise = torch.randn_like(clean_x)
+        # clean_x = clean_x.detach().requires_grad_(True)
+        clean_x = clean_x.requires_grad_(True)
         noisy_x, noise = self.make_noisy(clean_x, t_tensor)
         noisy_x = noisy_x.requires_grad_(True)
         

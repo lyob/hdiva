@@ -1,4 +1,9 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.distributions as dist
+from torch.autograd import grad
+import math
 import numpy as np
 from b_models.diva.diva_module import DiVA
 
@@ -6,60 +11,40 @@ from b_models.diva.diva_module import DiVA
 class DiVA_Inference(DiVA):
     def __init__(
             self, 
-            autoprior,
-            scheduler, 
-            kl_reduction="mean"
+            diva,
+            config,
         ):
         super(DiVA_Inference, self).__init__(
-            autoprior.denoiser, 
-            autoprior.infnet, 
-            scheduler, 
-            kl_reduction
+            diva.denoiser, 
+            diva.infnet, 
+            config.noise_schedule,
+            config.sigma_minmax,
+            config.timestep_dist,
+            config.num_timesteps,
+            config.reduction,
         )
-        self.n_times = scheduler.num_inference_steps
-        self.device = self.denoiser.device
-        self.img_C = 3
-        self.img_H = 64
-        self.img_W = 64
-        self.latent_dims = self.infnet.dim_latent
 
-        self.alphas = scheduler.alphas
-        self.alphas_cumprod = scheduler.alphas_cumprod
-        self.betas = scheduler.betas
-        self.set_schedules_from_alphas()
-    
-    # ----------------------------------- utils ---------------------------------- #
-    def extract(self, a, t, x_shape):
-        b, *_ = t.shape
-        out = a.gather(-1, t)
-        return out.reshape(b, *((1,) * (len(x_shape) - 1)))
-    
-    def set_schedules_from_alphas(self):
-        '''assume you have alphas, alphas_cumprod and betas'''
-        self.alphas = self.alphas.to(self.device)
-        self.alpha_cumprod = self.alphas_cumprod.to(self.device)
-        self.betas = self.betas.to(self.device)
-        self.sqrt_alphas = torch.sqrt(self.alphas).to(self.device)
-        self.sqrt_alphas_prod = (self.alphas_cumprod ** 0.5).to(self.device)
-        self.sqrt_betas = torch.sqrt(self.betas).to(self.device)
-
-        self.one_minus_alphas_prod = (1 - self.alphas_cumprod).to(self.device)
-        self.sqrt_one_minus_alphas_prod = torch.sqrt(self.one_minus_alphas_prod).to(self.device)
-
+        self.config = config
+        self.img_C = config.num_channels
+        self.img_H = config.image_dim
+        self.img_W = config.image_dim
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.n_times = config.num_timesteps
+        
     # ----------------------- inference ----------------------- #
     def denoise_at_t(self, x_t, pred_epsilon, timestep):
         sqrt_alpha_prod = self.extract(self.sqrt_alphas_prod, timestep, x_t.shape)
-        sqrt_one_minus_alpha_prod = self.extract(self.sqrt_one_minus_alphas_prod, timestep, x_t.shape)
-        x0_hat = 1 / sqrt_alpha_prod * (x_t - sqrt_one_minus_alpha_prod * pred_epsilon)
+        sqrt_one_minus_alpha_bar = self.extract(self.sqrt_one_minus_alpha_bars, timestep, x_t.shape)
+        x0_hat = 1 / sqrt_alpha_prod * (x_t - sqrt_one_minus_alpha_bar * pred_epsilon)
         return x0_hat
     
     def predict_mu_t(self, x_t, pred_epsilon, timestep):
         alpha = self.extract(self.alphas, timestep, x_t.shape)
         sqrt_alpha = self.extract(self.sqrt_alphas, timestep, x_t.shape)
-        sqrt_one_minus_alpha_prod = self.extract(self.sqrt_one_minus_alphas_prod, timestep, x_t.shape)
+        sqrt_one_minus_alpha_bar = self.extract(self.sqrt_one_minus_alpha_bars, timestep, x_t.shape)
         
         # denoise at time t, utilizing predicted noise
-        mu_t_minus_1 = 1 / sqrt_alpha * (x_t - (1-alpha)/sqrt_one_minus_alpha_prod * pred_epsilon)
+        mu_t_minus_1 = 1 / sqrt_alpha * (x_t - (1-alpha)/sqrt_one_minus_alpha_bar * pred_epsilon)
         return mu_t_minus_1 
     
     def compute_score_inference(self, log_p_z, noisy_x):
@@ -79,26 +64,54 @@ class DiVA_Inference(DiVA):
         
         # get the score of the log posterior
         noisy_x = noisy_x.detach().requires_grad_(True)
-        _, mu_t, var_t = self.infnet(noisy_x)
-        log_p_z = self.compute_log_posterior_vectorized(mu_t, var_t, z_sample)
+        mu_t, logvar_t = self.infnet(noisy_x)
+        log_p_z = self.compute_log_posterior(mu_t, logvar_t, z_sample)
         z_score = self.compute_score_inference(log_p_z, noisy_x)
 
-        z_score_weight = self.extract(self.sqrt_one_minus_alphas_prod, timestep, noisy_x.shape)
+        z_score_weight = self.extract(self.sqrt_one_minus_alpha_bars, timestep, noisy_x.shape)
         weighted_z_score = z_score_weight * z_score
         
-        # get conditional epsilon from the denoiser
-        pred_epsilon = self.denoiser(noisy_x, timestep).sample  # = score of p(x_t|x_t+1)
-        # pred_epsilon_guided = pred_epsilon - weighted_z_score
+
+
+        # # get conditional epsilon from the denoiser
+        # pred_epsilon = self.denoiser(noisy_x, timestep)  # = score of p(x_t|x_t+1)
+        # # pred_epsilon_guided = pred_epsilon - weighted_z_score
+        
+        # # get x_t-1 ~ N(mu_t-1, beta_t*I) = p(x_t-1|x_t, z)
+        # prior_transition_mean = self.predict_mu_t(noisy_x, pred_epsilon, timestep)  # mean of prior transition operator
+        # alpha = self.extract(self.alphas, timestep, noisy_x.shape)
+        # sqrt_alpha = self.extract(self.sqrt_alphas, timestep, noisy_x.shape)
+        # mu_t_minus_1 = prior_transition_mean + (1-alpha)/sqrt_alpha * z_score  # mean of posterior transition operator
+        
+        # sqrt_beta = self.extract(self.sqrt_betas, timestep, noisy_x.shape)  # std of either transition operator
+        # # x_t_minus_1 = mu_t_minus_1 + sqrt_beta*z  # posterior sample
+        # self.x_t = mu_t_minus_1 + sqrt_beta*z  # posterior sample
+        # # self.x_t = self.x_t.clamp(-1., 1.)  # clamp to [-1, 1] range
+        
+        # # estimate x0 
+        # # x0_hat_unguided = self.denoise_at_t(noisy_x, pred_epsilon, timestep)
+        # # x0_hat_guided = self.denoise_at_t(noisy_x, pred_epsilon_guided, timestep)
+        
+        # # self.prior_score = -pred_epsilon / self.extract(self.sqrt_one_minus_alphas_prod, timestep, noisy_x.shape)
+        
+        # # return x_t_minus_1.clamp(-1., 1)
+        # # return prior_transition_mean, mu_t_minus_1, pred_epsilon, pred_epsilon_guided, z_score, weighted_z_score, x0_hat_unguided, x0_hat_guided
+
+
+
+                # get conditional epsilon from the denoiser
+        pred_epsilon = self.denoiser(noisy_x, timestep)  # = score of p(x_t|x_t+1)
+        pred_epsilon_guided = pred_epsilon - weighted_z_score
         
         # get x_t-1 ~ N(mu_t-1, beta_t*I) = p(x_t-1|x_t, z)
-        prior_transition_mean = self.predict_mu_t(noisy_x, pred_epsilon, timestep)  # mean of prior transition operator
-        alpha = self.extract(self.alphas, timestep, noisy_x.shape)
-        sqrt_alpha = self.extract(self.sqrt_alphas, timestep, noisy_x.shape)
-        mu_t_minus_1 = prior_transition_mean + (1-alpha)/sqrt_alpha * z_score  # mean of posterior transition operator
+        posterior_transition_mean = self.predict_mu_t(noisy_x, pred_epsilon_guided, timestep)  # mean of prior transition operator
+        # alpha = self.extract(self.alphas, timestep, noisy_x.shape)
+        # sqrt_alpha = self.extract(self.sqrt_alphas, timestep, noisy_x.shape)
+        # mu_t_minus_1 = prior_transition_mean + (1-alpha)/sqrt_alpha * z_score  # mean of posterior transition operator
         
         sqrt_beta = self.extract(self.sqrt_betas, timestep, noisy_x.shape)  # std of either transition operator
         # x_t_minus_1 = mu_t_minus_1 + sqrt_beta*z  # posterior sample
-        self.x_t = mu_t_minus_1 + sqrt_beta*z  # posterior sample
+        self.x_t = posterior_transition_mean + sqrt_beta*z  # posterior sample
         # self.x_t = self.x_t.clamp(-1., 1.)  # clamp to [-1, 1] range
         
         # estimate x0 
@@ -109,6 +122,9 @@ class DiVA_Inference(DiVA):
         
         # return x_t_minus_1.clamp(-1., 1)
         # return prior_transition_mean, mu_t_minus_1, pred_epsilon, pred_epsilon_guided, z_score, weighted_z_score, x0_hat_unguided, x0_hat_guided
+
+
+
 
     def conditional_sample(self, N, target_image_input, return_chain=False, x_t=None):
         if x_t is None:
@@ -125,7 +141,8 @@ class DiVA_Inference(DiVA):
         target_image = target_image.to(self.device).requires_grad_(True)
         
         # assuming z_given_xt method
-        z_sample, _, _ = self.infnet(target_image)  
+        mu, logvar = self.infnet(target_image)  
+        z_sample = self.infnet.sample(mu, logvar)
         
         for t in range(self.n_times-1, -1, -1):
             self.reverse_one_timestep(self.x_t, t, z_sample)

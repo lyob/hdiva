@@ -26,57 +26,57 @@ class LinearInfNet(nn.Module):
 
 
 # --------------------------- convolutional encoder -------------------------- #
-class VariableConvEncoder(nn.Module):
-    def __init__(self, 
-                 args):
-        super(VariableConvEncoder, self).__init__()
-        '''
-        image_dims: int, the dimension of the input image height or width
-        conv_cfg: list of lists, each list contains [out_channels, kernel_size, stride, padding]'''
+class ConvNet(nn.Module):
+    def __init__(self, args):
+        super(ConvNet, self).__init__()
         
-        self.latent_dims:int = args.latent_dims
-        conv_cfg = args.conv_cfg
+        self.latent_dim:int = args.latent_dim
+        self.num_layers:int = args.num_layers_rec
+        kernel_size = args.kernel_size_rec
+        stride = args.stride_rec
+        padding = args.padding_rec
         nonlin = args.activation_rec
         bias = args.bias_rec
-        
-        assert len(conv_cfg) > 0, 'conv_cfg must contain at least 2 convolutional layers'
-        self.conv_cfg = conv_cfg
+
+        assert self.num_layers > 0, 'num_layers must be greater than 0'
+        self.kernels = []
+        for i in range(self.num_layers):
+            self.kernels.append(kernel_size)
         
         if nonlin == 'relu':
             self.nonlin = nn.ReLU() 
+        elif nonlin == 'gelu':
+            self.nonlin = nn.GELU()
         else:
-            raise ValueError('nonlin must be specified, e.g. "relu"')
+            raise ValueError('nonlin must be specified, e.g. "relu" or "gelu"')
         
         '''first convolutional layer'''
         self.d1_input_channels = args.num_channels
-        self.d1_input_dims = args.image_dims
+        self.d1_input_dims = args.image_dim
         # input: 1 x 32 x 32
         # output: 4 x 16 x 16
-        self.conv_d1 = nn.Conv2d(self.d1_input_channels, *conv_cfg[0])  # in_channels, out_channels, kernel_size, stride, padding
+        self.conv_d1 = nn.Conv2d(self.d1_input_channels, self.kernels[0], kernel_size, stride, padding, bias=bias)  # in_channels, out_channels, kernel_size, stride, padding
         
-        if len(conv_cfg) > 1:
-            for i in range(1, len(conv_cfg)):
-                setattr(self, f'conv_d{i+1}', nn.Conv2d(conv_cfg[i-1][0], *conv_cfg[i]))
-                setattr(self, f'bn_d{i+1}', BF_batchNorm(conv_cfg[i][0]))
-                setattr(self, f'd{i+1}_input_dims', self.compute_output_dims(getattr(self, f'd{i}_input_dims'), *conv_cfg[i-1]))
+        if self.num_layers > 1:
+            for i in range(1, self.num_layers):
+                setattr(self, f'conv_d{i+1}', nn.Conv2d(self.kernels[i-1], self.kernels[i], kernel_size, stride, padding, bias=bias))
+                setattr(self, f'bn_d{i+1}', BF_batchNorm(self.kernels[i]))
+                setattr(self, f'd{i+1}_input_dims', self.compute_output_dims(getattr(self, f'd{i}_input_dims'), self.kernels[i-1], kernel_size, stride, padding))
                 # if i%2 == 0:
                     # setattr(self, f'pool_d{i//2}', nn.AvgPool2d(kernel_size=2, stride=2, padding=1 ))
         
         '''linear layers'''
-        linear_input_dims = self.compute_output_dims(getattr(self, f'd{len(conv_cfg)}_input_dims'), *conv_cfg[-1])
-        linear_input_dims = linear_input_dims**2 * conv_cfg[-1][0]
-        self.linear_mu = nn.Linear(linear_input_dims, self.latent_dims, bias=bias)
-        self.linear_sig = nn.Linear(linear_input_dims, self.latent_dims, bias=bias)
+        linear_input_dims = self.compute_output_dims(getattr(self, f'd{self.num_layers}_input_dims'), self.kernels[-1], kernel_size, stride, padding)
+        linear_input_dims = linear_input_dims**2 * self.kernels[-1]
+        self.linear_mu = nn.Linear(linear_input_dims, self.latent_dim, bias=bias)
+        self.linear_logvar = nn.Linear(linear_input_dims, self.latent_dim, bias=bias)
         
-        self.kl_reduction = args.kl_reduction
-        self.kl = 0
-        
-    def compute_output_dims(self, input_dim, output_channels, kernel, stride, padding):
+    def compute_output_dims(self, input_dim, output_channels, kernel_size, stride, padding):
         '''calculate the output dimensions of a convolutional layer, for a given input dimension and convolutional settings'''
-        return ((input_dim - kernel + 2*padding)//stride + 1)
+        return ((input_dim - kernel_size + 2*padding)//stride + 1)
         
     def forward(self, x):
-        for i in range(1, len(self.conv_cfg)+1):
+        for i in range(1, self.num_layers+1):
             x = getattr(self, f'conv_d{i}')(x)
             if i!=1:
                 x = getattr(self, f'bn_d{i}')(x)
@@ -84,14 +84,14 @@ class VariableConvEncoder(nn.Module):
         
         x = torch.flatten(x, start_dim=1)
         mu = self.linear_mu(x)
-        sigma = F.softplus(self.linear_sig(x))
-        z = mu + sigma*torch.randn_like(mu)
+        logvar = self.linear_logvar(x)
         
-        # self.kl = calc_kl_divergence(mu, torch.zeros_like(mu), sigma**2, torch.ones_like(sigma)).mean()
-        # kl = torch.distributions.kl.kl_divergence(torch.distributions.Normal(mu, sigma**2), torch.distributions.Normal(0, 1))
-        # self.kl = kl.sum() if self.kl_reduction == 'sum' else kl.mean()
+        return mu, logvar
 
-        return z, mu, sigma
+    def sample(self, mu, logvar):
+        std = (0.5 * logvar).exp()
+        eps = torch.randn_like(std)
+        return mu + eps * std
     
 
 

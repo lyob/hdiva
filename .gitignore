@@ -5,4 +5,7 @@ c_training/lightning_checkpoints
 c_training/scripts/slurm-*.out
 c_training/lightning_logs
 artifacts
-
+.vscode
+a_datasets/celeba_color/*
+a_datasets/mpi3d/*
+a_datasets/dsprites/*

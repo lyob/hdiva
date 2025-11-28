@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 # ------------------------------ unconditional diffusion model ------------------------------ #
 class DDPM(nn.Module):
