@@ -58,7 +58,7 @@ def get_checkpoint_dir(
     model_num=61,
     project_name: str = "diva_manual_celeba_color_64",
     checkpoint_dir: str = "/mnt/home/blyo1/hdiva/c_training/lightning_checkpoints",
-    epoch: str | None = None,
+    epoch: int | str | None = None,
 ):
     """find the checkpoint starting with a two digit number"""
     if isinstance(model_num, int):
@@ -73,7 +73,7 @@ def get_checkpoint_dir(
             checkpoint_dir = f"{checkpoint_dir}/{dir}"
             break
 
-    if epoch is not None and epoch != "last":
+    if epoch is not None and epoch != "last" and epoch != "latest":
         checkpoint_dir = f"{checkpoint_dir}/epoch={epoch}.ckpt"
     else:
         checkpoint_dir = f"{checkpoint_dir}/last.ckpt"
@@ -89,17 +89,13 @@ def set_lr(config, current_epoch):
     if config.lr_schedule == "constant":
         lr = lr_init
     elif config.lr_schedule == "linear":
-        lr = lr_init + (lr_final - lr_init) * (
-            current_epoch / config.lr_num_warmup_epochs
-        )
+        lr = lr_init + (lr_final - lr_init) * (current_epoch / config.lr_num_warmup_epochs)
     elif config.lr_schedule == "cosine":
         lr = lr_final + 0.5 * (lr_init - lr_final) * (
             1 + math.cos(math.pi * current_epoch / config.lr_num_warmup_epochs)
         )
     elif config.lr_schedule == "exponential":
-        lr = lr_init * (lr_final / lr_init) ** (
-            current_epoch / config.lr_num_warmup_epochs
-        )
+        lr = lr_init * (lr_final / lr_init) ** (current_epoch / config.lr_num_warmup_epochs)
     else:
         raise ValueError(f"Unknown lr_schedule: {config.lr_schedule}")
     return lr
@@ -108,36 +104,59 @@ def set_lr(config, current_epoch):
 def set_kl_weight(config, current_epoch):
     kl_annealing_schedule = config.kl_annealing_schedule
     kl_annealing_epochs = config.kl_annealing_epochs
-    kl_weight_min = (
-        config.kl_weight_min
-        if hasattr(config, "kl_weight_min")
-        else np.array(config.kl_weights_min)
-    )
-    kl_weight_max = (
-        config.kl_weight_max
-        if hasattr(config, "kl_weight_max")
-        else np.array(config.kl_weights_max)
-    )
+    # kl_weight_init = config.kl_weight_min if hasattr(config, "kl_weight_min") else np.array(config.kl_weights_min)
+    # kl_weight_final = config.kl_weight_max if hasattr(config, "kl_weight_max") else np.array(config.kl_weights_max)
+    kl_weight_init = config.kl_weight_min
+    kl_weight_final = config.kl_weight_max
 
     progress = min(1, current_epoch / (kl_annealing_epochs - 1))  # Normalize to [0, 1]
 
     if kl_annealing_schedule == "constant":
-        current_kl_weight = kl_weight_max
+        current_kl_weight = kl_weight_final
     elif kl_annealing_schedule == "linear":
-        current_kl_weight = kl_weight_min + (kl_weight_max - kl_weight_min) * progress
+        current_kl_weight = kl_weight_init + (kl_weight_final - kl_weight_init) * progress
     elif kl_annealing_schedule == "cosine":
         cosine_term = 0.5 * (1 + math.cos(math.pi * progress))
-        current_kl_weight = kl_weight_min + (kl_weight_max - kl_weight_min) * (
-            1 - cosine_term
-        )
-        current_kl_weight = min(max(current_kl_weight, kl_weight_min), kl_weight_max)
+        current_kl_weight = kl_weight_init + (kl_weight_final - kl_weight_init) * (1 - cosine_term)
+        current_kl_weight = min(max(current_kl_weight, kl_weight_init), kl_weight_final)
     elif kl_annealing_schedule == "exponential":
-        current_kl_weight = kl_weight_min * (kl_weight_max / kl_weight_min) ** progress
+        current_kl_weight = kl_weight_init * (kl_weight_final / kl_weight_init) ** progress
     else:
         raise ValueError(
             f"Unknown kl_annealing_schedule: {kl_annealing_schedule}, expected 'constant' or 'linear' or 'cosine' or 'exponential'"
         )
     return current_kl_weight
+
+
+def set_fraction_unconditional(config, current_epoch):
+    """
+    Compute the current fraction_unconditional value using a cosine schedule.
+
+    Args:
+        config: Config object with fraction_unconditional_init, fraction_unconditional_final,
+                and fraction_unconditional_annealing_epochs
+        current_epoch: Current training epoch
+
+    Returns:
+        Current fraction_unconditional value (float between init and final)
+    """
+    init = config.fraction_unconditional_init
+    final = config.fraction_unconditional_final
+    annealing_epochs = config.fraction_unconditional_annealing_epochs
+
+    progress = min(1, current_epoch / max(1, annealing_epochs - 1))  # Normalize to [0, 1]
+
+    # Cosine schedule: starts at init, ends at final
+    cosine_term = 0.5 * (1 + math.cos(math.pi * progress))
+    current_value = init + (final - init) * (1 - cosine_term)
+
+    # Clamp to ensure we stay within bounds
+    if init > final:
+        current_value = min(max(current_value, final), init)
+    else:
+        current_value = min(max(current_value, init), final)
+
+    return current_value
 
 
 # class WandbArtifactCallback(Callback):
@@ -168,10 +187,7 @@ class WandbArtifactCallback(Callback):
     def on_train_epoch_end(self, trainer, lightning_module):
         # Only log artifact every N epochs
         # if (trainer.current_epoch + 1) % self.every_n_epochs == 0:
-        if (
-            trainer.is_global_zero
-            and (trainer.current_epoch + 1) % self.every_n_epochs == 0
-        ):
+        if trainer.is_global_zero and (trainer.current_epoch + 1) % self.every_n_epochs == 0:
             # Get the most recent checkpoint path
             ckpt_path = trainer.checkpoint_callback.last_model_path
 
