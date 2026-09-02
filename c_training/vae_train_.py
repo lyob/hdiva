@@ -1,29 +1,25 @@
 import sys
 import time
+from dataclasses import asdict
 
 if "/mnt/home/blyo1/hdiva" not in sys.path:
     sys.path.append("/mnt/home/blyo1/hdiva")
-import os
 
 from lightning.pytorch import Trainer, seed_everything
-from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import ModelCheckpoint
 
-from a_datasets.dataset_lightning import GeneralDataModule
-from b_models.vae.vae_lightning import VAE_Lightning
-from b_models.configs.vae_config import SelectConfig
-from utils.training import (
-    WandbArtifactCallback,
-    get_checkpoint_dir,
-    rename_checkpoint_folder,
-)
+import os
+from b_models.configs.vae_config import VAE_Training_Config
+from b_models.vae.vae_lightning import Lightning_Model
+from utils.training import rename_checkpoint_folder
 
 
 # Training script
 def main():
     # ---------------------------------- params ---------------------------------- #
-    config = SelectConfig()
-    base_dir = config.project_dir
+    base_dir = "/mnt/home/blyo1/hdiva"
+    config = VAE_Training_Config()
 
     # ------------------------------- run training ------------------------------- #
     # seed
@@ -32,8 +28,9 @@ def main():
     # wandb
     wandb_logger = WandbLogger(
         project=config.model_name,
-        log_model=False,
+        log_model=True,
         save_dir=f"{base_dir}/c_training/lightning_logs",
+        # checkpoint_name=f'{model_name}-{wandb.run.id}'
     )
 
     # checkpointing
@@ -45,68 +42,58 @@ def main():
         save_weights_only=True,
         save_last=True,
         save_on_train_epoch_end=True,
-        dirpath=f"{base_dir}/c_training/lightning_checkpoints/{config.model_name}",
+        dirpath=f"{base_dir}/c_training/lightning_checkpoints/tmp",
         enable_version_counter=True,
         filename="{epoch:04d}",
     )
 
-    wandb_callback = WandbArtifactCallback(every_n_epochs=config.checkpoint_every_n_epochs, config=config)
-
-    # Initialize the dataset
-    datamodule = GeneralDataModule(config)
-
     # Initialize the model
-    model = VAE_Lightning(config=config)
+    model = Lightning_Model(config=config)
 
     # Initialize the Trainer
     trainer = Trainer(
-        accelerator="cuda",
+        accelerator="gpu",
         devices=config.num_gpus_per_node,  # GPUs per node (adjust based on your setup)
         num_nodes=config.num_nodes,  # Number of nodes
         strategy=config.strategy,
         max_epochs=config.num_epochs,
         logger=wandb_logger,
         log_every_n_steps=config.log_every_n_steps,
+        # precision="16-mixed",  # Use mixed precision
         precision=config.precision,
         enable_checkpointing=True,
         enable_progress_bar=True,
-        callbacks=[checkpoint_callback_total, wandb_callback],
+        callbacks=[checkpoint_callback_total],
         default_root_dir=f"{base_dir}",
     )
 
     # update the checkpoint callback's dirpath
-    rename_checkpoint_folder(
-        trainer,
-        checkpoint_dir=os.path.join(base_dir, f"c_training/lightning_checkpoints/{config.model_name}"),
-    )
+    rename_checkpoint_folder(trainer, checkpoint_dir=os.path.join(base_dir, "c_training/lightning_checkpoints"))
 
     # Log hyperparameters to wandb
-    # wandb_logger.log_hyperparams(training_config)
+    training_config = {
+        "seed": config.seed,
+        "strategy": config.strategy,
+        "num_epochs": config.num_epochs,
+        "batch_size_per_gpu": config.train_batch_size_per_gpu,
+        "precision": config.precision,
+        # "model_config" : asdict(config)
+    }
+    wandb_logger.log_hyperparams(training_config)
 
     # Start training
     start_time = time.time()
-    trainer.fit(model, datamodule=datamodule)
+    trainer.fit(model)
     end_time = time.time()
-    time_taken = (end_time - start_time) / 60
 
     # Log training time
-    print(f"Training time: {time_taken} minutes")
-    training_config = {}
-    training_config["training_time_minutes"] = time_taken
-    wandb_logger.log_hyperparams(training_config)
+    print(f"Training time: {(end_time - start_time) / 60} minutes")
 
     # Finish wandb run
     wandb_logger.experiment.finish()
 
-    # Log training time
-    print(f"Training time: {time_taken} minutes")
-    training_config = {}
-    training_config["training_time_minutes"] = time_taken
-    wandb_logger.log_hyperparams(training_config)
-
     # Finish wandb run
     wandb_logger.experiment.finish()
-
 
 if __name__ == "__main__":
     main()

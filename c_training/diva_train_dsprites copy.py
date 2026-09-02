@@ -11,7 +11,10 @@ from lightning.pytorch.loggers import WandbLogger
 
 from a_datasets.dsprites_lightning import DspritesDataModule
 from b_models.diva.diva_lightning import DiVA_Lightning
-from b_models.configs.diva_config_modular import DiVA_ConvNet_dSprites_Training_Config
+from b_models.configs.diva_config import (
+    DiVA_ConvNet_dSprites_Training_Config,
+    DiVA_Manual_dSprites_Training_Config,
+)
 from utils.training import (
     WandbArtifactCallback,
     get_checkpoint_dir,
@@ -23,6 +26,7 @@ from utils.training import (
 def main():
     # ---------------------------------- params ---------------------------------- #
     config = DiVA_ConvNet_dSprites_Training_Config()
+    # config = DiVA_Manual_dSprites_Training_Config()
     base_dir = config.project_dir
 
     # ------------------------------- run training ------------------------------- #
@@ -32,8 +36,12 @@ def main():
     # wandb
     wandb_logger = WandbLogger(
         project=config.model_name,
+        # log_model="all",
+        # log_model=True,
         log_model=False,
         save_dir=f"{base_dir}/c_training/lightning_logs",
+        # checkpoint_name='{epoch:04d}'
+        # checkpoint_name=f'{config.model_name}_{{epoch:04d}}'
     )
 
     # checkpointing
@@ -72,7 +80,7 @@ def main():
                 model_num=config.pretrained_model_num,
                 project_name=config.model_name,
                 checkpoint_dir=config.model_checkpoint_dir,
-                epoch=config.checkpoint_epoch,
+                epoch=None,
             )
             model = DiVA_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
     else:

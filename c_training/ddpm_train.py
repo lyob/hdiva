@@ -9,20 +9,17 @@ from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
-from a_datasets.dsprites_lightning import DspritesDataModule
-from b_models.diva.diva_lightning import DiVA_Lightning
-from b_models.configs.diva_config_modular import DiVA_ConvNet_dSprites_Training_Config
-from utils.training import (
-    WandbArtifactCallback,
-    get_checkpoint_dir,
-    rename_checkpoint_folder,
-)
+# from lightning.pytorch.strategies import DDPStrategy, FSDPStrategy
+from a_datasets.dataset_lightning import GeneralDataModule
+from b_models.ddpm.ddpm_lightning import DDPM_Lightning
+from b_models.configs.ddpm_config import SelectConfig
+from utils.training import WandbArtifactCallback, get_checkpoint_dir, rename_checkpoint_folder
 
 
 # Training script
 def main():
     # ---------------------------------- params ---------------------------------- #
-    config = DiVA_ConvNet_dSprites_Training_Config()
+    config = SelectConfig()
     base_dir = config.project_dir
 
     # ------------------------------- run training ------------------------------- #
@@ -53,30 +50,19 @@ def main():
     wandb_callback = WandbArtifactCallback(every_n_epochs=config.checkpoint_every_n_epochs, config=config)
 
     # Initialize the dataset
-    datamodule = DspritesDataModule(config)
+    datamodule = GeneralDataModule(config)
 
     # Initialize the model
     if config.resume_from_checkpoint:
-        if config.use_pretrained_denoiser_only:
-            # only use pretrained denoiser weights
-            pretrained_wandb_config = {
-                "project_name": config.pretrained_project_name,
-                "model_num": config.pretrained_model_num,
-                "artifact_id": config.pretrained_artifact_id,
-                "checkpoint_dir": config.model_checkpoint_dir,
-            }
-            model = DiVA_Lightning(config=config, pretrained_wandb_config=pretrained_wandb_config)
-        else:
-            # resume from full diva checkpoint
-            pretrained_checkpoint_dir = get_checkpoint_dir(
-                model_num=config.pretrained_model_num,
-                project_name=config.model_name,
-                checkpoint_dir=config.model_checkpoint_dir,
-                epoch=config.checkpoint_epoch,
-            )
-            model = DiVA_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
+        pretrained_checkpoint_dir = get_checkpoint_dir(
+            model_num=config.pretrained_model_num,
+            project_name=config.model_name,
+            checkpoint_dir=config.model_checkpoint_dir,
+            epoch=config.checkpoint_epoch,
+        )
+        model = DDPM_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
     else:
-        model = DiVA_Lightning(config=config)
+        model = DDPM_Lightning(config=config)
 
     # Initialize the Trainer
     trainer = Trainer(
@@ -84,13 +70,10 @@ def main():
         devices=config.num_gpus_per_node,  # GPUs per node (adjust based on your setup)
         num_nodes=config.num_nodes,  # Number of nodes
         strategy=config.strategy,
-        # strategy=DDPStrategy(),
-        # strategy=FSDPStrategy(),
         max_epochs=config.num_epochs,
         logger=wandb_logger,
         log_every_n_steps=config.log_every_n_steps,
-        # precision="16-mixed",  # Use mixed precision
-        # precision=config.precision,
+        precision=config.precision,
         enable_checkpointing=True,
         enable_progress_bar=True,
         callbacks=[checkpoint_callback_total, wandb_callback],
@@ -99,27 +82,14 @@ def main():
 
     # update the checkpoint callback's dirpath
     rename_checkpoint_folder(
-        trainer,
-        checkpoint_dir=os.path.join(base_dir, f"c_training/lightning_checkpoints/{config.model_name}"),
+        trainer, checkpoint_dir=os.path.join(base_dir, f"c_training/lightning_checkpoints/{config.model_name}")
     )
-
-    # Log hyperparameters to wandb
-    # wandb_logger.log_hyperparams(training_config)
 
     # Start training
     start_time = time.time()
     trainer.fit(model, datamodule=datamodule)
     end_time = time.time()
     time_taken = (end_time - start_time) / 60
-
-    # Log training time
-    print(f"Training time: {time_taken} minutes")
-    training_config = {}
-    training_config["training_time_minutes"] = time_taken
-    wandb_logger.log_hyperparams(training_config)
-
-    # Finish wandb run
-    wandb_logger.experiment.finish()
 
     # Log training time
     print(f"Training time: {time_taken} minutes")

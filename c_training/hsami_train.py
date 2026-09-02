@@ -9,9 +9,9 @@ from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
-from a_datasets.dsprites_lightning import DspritesDataModule
-from b_models.diva.diva_lightning import DiVA_Lightning
-from b_models.configs.diva_config_modular import DiVA_ConvNet_dSprites_Training_Config
+from a_datasets.dataset_lightning import GeneralDataModule
+from b_models.sami.sami_lightning import SAMI_Lightning
+from b_models.configs.sami_config import SelectConfig
 from utils.training import (
     WandbArtifactCallback,
     get_checkpoint_dir,
@@ -22,7 +22,7 @@ from utils.training import (
 # Training script
 def main():
     # ---------------------------------- params ---------------------------------- #
-    config = DiVA_ConvNet_dSprites_Training_Config()
+    config = SelectConfig()
     base_dir = config.project_dir
 
     # ------------------------------- run training ------------------------------- #
@@ -53,30 +53,23 @@ def main():
     wandb_callback = WandbArtifactCallback(every_n_epochs=config.checkpoint_every_n_epochs, config=config)
 
     # Initialize the dataset
-    datamodule = DspritesDataModule(config)
+    datamodule = GeneralDataModule(config)
 
     # Initialize the model
     if config.resume_from_checkpoint:
         if config.use_pretrained_denoiser_only:
-            # only use pretrained denoiser weights
-            pretrained_wandb_config = {
-                "project_name": config.pretrained_project_name,
-                "model_num": config.pretrained_model_num,
-                "artifact_id": config.pretrained_artifact_id,
-                "checkpoint_dir": config.model_checkpoint_dir,
-            }
-            model = DiVA_Lightning(config=config, pretrained_wandb_config=pretrained_wandb_config)
+            model = SAMI_Lightning(config=config)
         else:
             # resume from full diva checkpoint
             pretrained_checkpoint_dir = get_checkpoint_dir(
-                model_num=config.pretrained_model_num,
+                model_num=config.pretrained_model_number,
                 project_name=config.model_name,
                 checkpoint_dir=config.model_checkpoint_dir,
                 epoch=config.checkpoint_epoch,
             )
-            model = DiVA_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
+            model = SAMI_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
     else:
-        model = DiVA_Lightning(config=config)
+        model = SAMI_Lightning(config=config)
 
     # Initialize the Trainer
     trainer = Trainer(
@@ -84,13 +77,10 @@ def main():
         devices=config.num_gpus_per_node,  # GPUs per node (adjust based on your setup)
         num_nodes=config.num_nodes,  # Number of nodes
         strategy=config.strategy,
-        # strategy=DDPStrategy(),
-        # strategy=FSDPStrategy(),
         max_epochs=config.num_epochs,
         logger=wandb_logger,
         log_every_n_steps=config.log_every_n_steps,
-        # precision="16-mixed",  # Use mixed precision
-        # precision=config.precision,
+        precision=config.precision,
         enable_checkpointing=True,
         enable_progress_bar=True,
         callbacks=[checkpoint_callback_total, wandb_callback],

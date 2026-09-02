@@ -2,7 +2,7 @@
 
 #SBATCH --job-name=ddpm
 #SBATCH -p gpu
-#SBATCH -N 5
+#SBATCH -N 3
 #SBATCH -C a100-80gb
 # This should always be 1!
 #SBATCH --ntasks-per-node=1
@@ -39,7 +39,7 @@ srun --error="$main_dir/c_training/cluster_logs/${jobid}/err.err" \
 			--rdzv_id $SLURM_JOB_ID \
 			--rdzv_backend c10d \
 			--rdzv_endpoint $master_node:29500 \
-				c_training/ddpm_train_dsprites.py
+				c_training/ddpm_train.py
 
 sleep 1
 cd $current_dir

@@ -1,16 +1,16 @@
 #!/bin/bash -l
 
-#SBATCH --job-name=vae
+#SBATCH --job-name=sami
 #SBATCH -p gpu
-#SBATCH -N 1
+#SBATCH -N 3
 #SBATCH -C a100-80gb
 # This should always be 1!
 #SBATCH --ntasks-per-node=1
 # This is the physical number of GPUs per node
-#SBATCH --gpus-per-node=2
+#SBATCH --gpus-per-node=4
 # You can vary that one if you see you need more or less CPU cores per gpu
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=1:00:00
+#SBATCH --time=24:00:00
 
 jobid=$SLURM_JOB_ID
 current_dir=$PWD
@@ -39,7 +39,7 @@ srun --error="$main_dir/c_training/cluster_logs/${jobid}/err.err" \
 			--rdzv_id $SLURM_JOB_ID \
 			--rdzv_backend c10d \
 			--rdzv_endpoint $master_node:29500 \
-				c_training/vae_train.py
+				c_training/sami_train.py
 
 sleep 1
 cd $current_dir

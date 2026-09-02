@@ -1,18 +1,19 @@
 import sys
 import time
-if '/mnt/home/blyo1/hdiva' not in sys.path:
-    sys.path.append('/mnt/home/blyo1/hdiva')
+
+if "/mnt/home/blyo1/hdiva" not in sys.path:
+    sys.path.append("/mnt/home/blyo1/hdiva")
 import os
 
 from lightning.pytorch import Trainer, seed_everything
-from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.strategies import DDPStrategy, FSDPStrategy
 
 from a_datasets.celeba_lightning import CelebAColorDataModule
-from c_training.diva_lightning import DiVA_Lightning
-from c_training.configs.diva_config import DiVA_Manual_CelebA_64_Training_Config
-from utils.training import get_checkpoint_dir, rename_checkpoint_folder, WandbArtifactCallback
+from b_models.diva.diva_lightning import DiVA_Lightning
+from b_models.configs.diva_config import DiVA_Manual_CelebA_64_Training_Config
+from utils.training import WandbArtifactCallback, get_checkpoint_dir, rename_checkpoint_folder
 
 
 # Training script
@@ -35,7 +36,7 @@ def main():
         # checkpoint_name='{epoch:04d}'
         # checkpoint_name=f'{config.model_name}_{{epoch:04d}}'
     )
-    
+
     # checkpointing
     checkpoint_callback_total = ModelCheckpoint(
         every_n_epochs=config.checkpoint_every_n_epochs,
@@ -60,18 +61,15 @@ def main():
         if config.use_pretrained_denoiser_only:
             pretrained_wandb_config = {
                 # 'project_name': 'ddpm_celeba_color_64',
-                'project_name': 'diva_manual_celeba_color_64',
-                'model_num': 84,
-                'artifact_id': "v0",
-                'checkpoint_dir': f"/mnt/home/blyo1/diva/celeba_color/lightning_checkpoints",
+                "project_name": "diva_manual_celeba_color_64",
+                "model_num": 84,
+                "artifact_id": "v0",
+                "checkpoint_dir": f"/mnt/home/blyo1/diva/celeba_color/lightning_checkpoints",
                 # 'checkpoint_dir': config.model_checkpoint_dir,
             }
             model = DiVA_Lightning(config=config, pretrained_wandb_config=pretrained_wandb_config)
         else:
-            pretrained_checkpoint_dir = get_checkpoint_dir(model_num=84, 
-                                                           project_name=config.model_name, 
-                                                           checkpoint_dir=config.model_checkpoint_dir, 
-                                                           epoch="0299")
+            pretrained_checkpoint_dir = get_checkpoint_dir(model_num=84, project_name=config.model_name, checkpoint_dir=config.model_checkpoint_dir, epoch="0299")
             model = DiVA_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
     else:
         model = DiVA_Lightning(config=config)
@@ -91,16 +89,13 @@ def main():
         precision=config.precision,
         enable_checkpointing=True,
         enable_progress_bar=True,
-        callbacks=[
-            checkpoint_callback_total, 
-            wandb_callback
-        ],
+        callbacks=[checkpoint_callback_total, wandb_callback],
         default_root_dir=f"{base_dir}",
     )
 
     # update the checkpoint callback's dirpath
     rename_checkpoint_folder(trainer, checkpoint_dir=os.path.join(base_dir, f"c_training/lightning_checkpoints/{config.model_name}"))
-    
+
     # Log hyperparameters to wandb
     # wandb_logger.log_hyperparams(training_config)
 
@@ -108,7 +103,7 @@ def main():
     start_time = time.time()
     trainer.fit(model, datamodule=datamodule)
     end_time = time.time()
-    time_taken = (end_time - start_time)/60
+    time_taken = (end_time - start_time) / 60
 
     # Log training time
     print(f"Training time: {time_taken} minutes")
@@ -118,6 +113,7 @@ def main():
 
     # Finish wandb run
     wandb_logger.experiment.finish()
+
 
 if __name__ == "__main__":
     main()

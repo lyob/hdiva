@@ -1,25 +1,26 @@
 import sys
 import time
-if '/mnt/home/blyo1/hdiva' not in sys.path:
-    sys.path.append('/mnt/home/blyo1/hdiva')
+
+if "/mnt/home/blyo1/hdiva" not in sys.path:
+    sys.path.append("/mnt/home/blyo1/hdiva")
 import os
 
 from lightning.pytorch import Trainer, seed_everything
-from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.strategies import DDPStrategy, FSDPStrategy
+from lightning.pytorch.loggers import WandbLogger
 
+# from lightning.pytorch.strategies import DDPStrategy, FSDPStrategy
 from a_datasets.dsprites_lightning import DspritesDataModule
-from c_training.ddpm_lightning import DDPM_Lightning
-from c_training.configs.ddpm_config import DDPM_dSprites_Training_Config
-from utils.training import get_checkpoint_dir, rename_checkpoint_folder, WandbArtifactCallback
+from b_models.ddpm.ddpm_lightning import DDPM_Lightning
+from b_models.configs.ddpm_config import DDPM_dSprites_Training_Config
+from utils.training import WandbArtifactCallback, get_checkpoint_dir, rename_checkpoint_folder
 
 
 # Training script
 def main():
     # ---------------------------------- params ---------------------------------- #
-    base_dir = "/mnt/home/blyo1/hdiva"
     config = DDPM_dSprites_Training_Config()
+    base_dir = config.project_dir
 
     # ------------------------------- run training ------------------------------- #
     # seed
@@ -31,7 +32,7 @@ def main():
         log_model=False,
         save_dir=f"{base_dir}/c_training/lightning_logs",
     )
-    
+
     # checkpointing
     checkpoint_callback_total = ModelCheckpoint(
         every_n_epochs=config.checkpoint_every_n_epochs,
@@ -53,10 +54,12 @@ def main():
 
     # Initialize the model
     if config.resume_from_checkpoint:
-        pretrained_checkpoint_dir = get_checkpoint_dir(model_num=config.checkpoint_model_num, 
-                                                        project_name=config.model_name, 
-                                                        checkpoint_dir=config.model_checkpoint_dir, 
-                                                        epoch=config.checkpoint_epoch)
+        pretrained_checkpoint_dir = get_checkpoint_dir(
+            model_num=config.checkpoint_model_num,
+            project_name=config.model_name,
+            checkpoint_dir=config.model_checkpoint_dir,
+            epoch=config.checkpoint_epoch,
+        )
         model = DDPM_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
     else:
         model = DDPM_Lightning(config=config)
@@ -70,24 +73,23 @@ def main():
         max_epochs=config.num_epochs,
         logger=wandb_logger,
         log_every_n_steps=config.log_every_n_steps,
-        precision=config.precision,
+        # precision=config.precision,
         enable_checkpointing=True,
         enable_progress_bar=True,
-        callbacks=[
-            checkpoint_callback_total, 
-            wandb_callback
-        ],
+        callbacks=[checkpoint_callback_total, wandb_callback],
         default_root_dir=f"{base_dir}",
     )
 
     # update the checkpoint callback's dirpath
-    rename_checkpoint_folder(trainer, checkpoint_dir=os.path.join(base_dir, f"c_training/lightning_checkpoints/{config.model_name}"))
+    rename_checkpoint_folder(
+        trainer, checkpoint_dir=os.path.join(base_dir, f"c_training/lightning_checkpoints/{config.model_name}")
+    )
 
     # Start training
     start_time = time.time()
     trainer.fit(model, datamodule=datamodule)
     end_time = time.time()
-    time_taken = (end_time - start_time)/60
+    time_taken = (end_time - start_time) / 60
 
     # Log training time
     print(f"Training time: {time_taken} minutes")
@@ -97,6 +99,7 @@ def main():
 
     # Finish wandb run
     wandb_logger.experiment.finish()
+
 
 if __name__ == "__main__":
     main()

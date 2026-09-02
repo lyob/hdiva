@@ -1,16 +1,17 @@
 import sys
 import time
 from dataclasses import asdict
-if '/mnt/home/blyo1/hdiva' not in sys.path:
-    sys.path.append('/mnt/home/blyo1/hdiva')
+
+if "/mnt/home/blyo1/hdiva" not in sys.path:
+    sys.path.append("/mnt/home/blyo1/hdiva")
 
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 
 import os
-from c_training.configs.lvae_config import LVAE_Training_Config
-from c_training.lvae_lightning import Lightning_Model
+from b_models.configs.lvae_config import LVAE_Training_Config
+from b_models.lvae.lvae_lightning import Lightning_Model
 from utils.training import rename_checkpoint_folder
 
 
@@ -31,7 +32,7 @@ def main():
         save_dir=f"{base_dir}/c_training/lightning_logs",
         # checkpoint_name=f'{model_name}-{wandb.run.id}'
     )
-    
+
     # checkpointing
     checkpoint_callback_total = ModelCheckpoint(
         every_n_epochs=config.checkpoint_every_n_epochs,
@@ -68,14 +69,14 @@ def main():
 
     # update the checkpoint callback's dirpath
     rename_checkpoint_folder(trainer, checkpoint_dir=os.path.join(base_dir, "c_training/lightning_checkpoints"))
-    
+
     # Log hyperparameters to wandb
     training_config = {
-        "seed" : config.seed,
-        "strategy" : config.strategy,
-        "num_epochs" : config.num_epochs,
-        "batch_size_per_gpu" : config.train_batch_size_per_gpu,
-        "precision" : config.precision,
+        "seed": config.seed,
+        "strategy": config.strategy,
+        "num_epochs": config.num_epochs,
+        "batch_size_per_gpu": config.train_batch_size_per_gpu,
+        "precision": config.precision,
     }
     wandb_logger.log_hyperparams(training_config)
 
@@ -85,7 +86,10 @@ def main():
     end_time = time.time()
 
     # Log training time
-    print(f"Training time: {(end_time - start_time)/60} minutes")
+    print(f"Training time: {(end_time - start_time) / 60} minutes")
+
+    # Finish wandb run
+    wandb_logger.experiment.finish()
 
     # Finish wandb run
     wandb_logger.experiment.finish()
