@@ -2,19 +2,19 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from b_models.diva.diva_module import DiVA
+from b_models.sami.sami_module import SAMI
 
 
 # ------------------------------ inference class ----------------------------- #
-class DiVA_Inference(DiVA):
+class SAMI_Inference(SAMI):
     def __init__(
         self,
-        diva,
+        sami,
         config,
     ):
-        super(DiVA_Inference, self).__init__(
-            diva.denoiser,
-            diva.infnet,
+        super(SAMI_Inference, self).__init__(
+            sami.denoiser,
+            sami.infnet,
             config.noise_schedule,
             config.sigma_minmax,
             config.timestep_dist,
@@ -38,9 +38,9 @@ class DiVA_Inference(DiVA):
 
     # ----------------------- inference ----------------------- #
     def denoise_at_t(self, x_t, pred_epsilon, timestep):
-        sqrt_alpha_prod = self.extract(self.sqrt_alpha_bars, timestep, x_t.shape)
+        sqrt_alpha_bar = self.extract(self.sqrt_alpha_bars, timestep, x_t.shape)
         sqrt_one_minus_alpha_bar = self.extract(self.sqrt_one_minus_alpha_bars, timestep, x_t.shape)
-        x0_hat = 1 / sqrt_alpha_prod * (x_t - sqrt_one_minus_alpha_bar * pred_epsilon)
+        x0_hat = 1 / sqrt_alpha_bar * (x_t - sqrt_one_minus_alpha_bar * pred_epsilon)
         return x0_hat
 
     def predict_mu_t(self, x_t, pred_epsilon, timestep):
@@ -50,6 +50,42 @@ class DiVA_Inference(DiVA):
 
         # denoise at time t, utilizing predicted noise
         mu_t_minus_1 = 1 / sqrt_alpha * (x_t - (1 - alpha) / sqrt_one_minus_alpha_bar * pred_epsilon)
+        return mu_t_minus_1
+
+    def predict_mu_t_from_x0(self, x0_hat, x_t, timestep):
+        """
+        Compute mu_{t-1} using the posterior mean formula:
+        mu_{t-1} = (sqrt(alpha_bar_{t-1}) * beta_t) / (1 - alpha_bar_t) * x0_hat
+                + (sqrt(alpha_t) * (1 - alpha_bar_{t-1})) / (1 - alpha_bar_t) * x_t
+        """
+        # Extract values for timestep t
+        sqrt_alpha_t = self.extract(self.sqrt_alphas, timestep, x_t.shape)
+        alpha_bar_t = self.extract(self.alpha_bars, timestep, x_t.shape)
+        beta_t = self.extract(self.betas, timestep, x_t.shape)
+
+        # Handle alpha_bar_{t-1} with boundary condition
+        # At t=1, alpha_bar_0 = 1.0
+        # For t>1, use alpha_bar_{t-1}
+        alpha_bar_prev = torch.ones_like(alpha_bar_t)
+        mask = timestep > 0  # mask for t > 0 (i.e., t >= 1 in 0-indexed)
+        if mask.any():
+            # For t > 0, get alpha_bar_{t-1}
+            timestep_prev = torch.clamp(timestep - 1, min=0)
+            alpha_bar_prev = torch.where(
+                mask.view(-1, 1, 1, 1),  # broadcast mask to match x_t shape
+                self.extract(self.alpha_bars, timestep_prev, x_t.shape),
+                alpha_bar_prev,
+            )
+
+        sqrt_alpha_bar_prev = torch.sqrt(alpha_bar_prev)
+
+        # Compute the two coefficients
+        coef_x0 = (sqrt_alpha_bar_prev * beta_t) / (1.0 - alpha_bar_t)
+        coef_xt = (sqrt_alpha_t * (1.0 - alpha_bar_prev)) / (1.0 - alpha_bar_t)
+
+        # Compute posterior mean
+        mu_t_minus_1 = coef_x0 * x0_hat + coef_xt * x_t
+
         return mu_t_minus_1
 
     def compute_score_inference(self, log_p_z, noisy_x):
@@ -73,32 +109,37 @@ class DiVA_Inference(DiVA):
         log_p_z = self.compute_log_posterior(mu_t, logvar_t, z_sample)
         z_score = self.compute_score_inference(log_p_z, noisy_x)
 
-        z_score_weight = self.extract(self.sqrt_one_minus_alpha_bars, timestep, noisy_x.shape)
-        weighted_z_score = z_score_weight * z_score
-
         # get conditional epsilon from the denoiser
-        pred_epsilon = self.denoiser(noisy_x, timestep)  # = score of p(x_t|x_t+1)
-        pred_epsilon_guided = pred_epsilon - weighted_z_score
+        if self.config.parameterization == "noise":
+            z_score_weight = self.extract(self.sqrt_one_minus_alpha_bars, timestep, noisy_x.shape)
+            weighted_z_score = z_score_weight * z_score
 
-        # get x_t-1 ~ N(mu_t-1, beta_t*I) = p(x_t-1|x_t, z)
-        posterior_transition_mean = self.predict_mu_t(
-            noisy_x, pred_epsilon_guided, timestep
-        )  # mean of prior transition operator
+            pred_epsilon = self.denoiser(noisy_x, timestep)  # = score of p(x_t|x_t+1)
+            pred_epsilon_guided = pred_epsilon - weighted_z_score
 
-        sqrt_beta = self.extract(self.sqrt_betas, timestep, noisy_x.shape)  # std of either transition operator
-        self.x_t = posterior_transition_mean + sqrt_beta * z  # posterior sample
+            """calculating x_t-1 from epsilon directly does not let me clip x0"""
+            # # get x_t-1 ~ N(mu_t-1, beta_t*I) = p(x_t-1|x_t, z)
+            # posterior_transition_mean = self.predict_mu_t(
+            #     noisy_x, pred_epsilon_guided, timestep
+            # )  # mean of prior transition operator
 
-        # estimate x0
-        self.x0_hat_guided = self.denoise_at_t(noisy_x, pred_epsilon_guided, timestep)
+            # sqrt_beta = self.extract(self.sqrt_betas, timestep, noisy_x.shape)  # std of either transition operator
+            # self.x_t = posterior_transition_mean + sqrt_beta * z  # posterior sample
+            # # estimate x0
+            # self.x0_hat_guided = self.denoise_at_t(noisy_x, pred_epsilon_guided, timestep)
 
-        self.prior_score = -pred_epsilon / self.extract(self.sqrt_one_minus_alpha_bars, timestep, noisy_x.shape)
-        self.posterior_score = -pred_epsilon_guided / self.extract(
-            self.sqrt_one_minus_alpha_bars, timestep, noisy_x.shape
-        )
-        self.guidance_score = self.posterior_score - self.prior_score
+            """calculating x0 from epsilon first, then using it to calculate x_t-1 does let me clip x0"""
+            self.x0_hat_guided = self.denoise_at_t(noisy_x, pred_epsilon_guided, timestep)
+            self.x0_hat_guided = torch.clamp(self.x0_hat_guided, -1, 1)
+            mu_t_minus_1 = self.predict_mu_t_from_x0(self.x0_hat_guided, noisy_x, timestep)
+            sqrt_beta_t = self.extract(self.sqrt_betas, timestep, noisy_x.shape)
+            self.x_t = mu_t_minus_1 + sqrt_beta_t * z
 
-        # return x_t_minus_1.clamp(-1., 1)
-        # return prior_transition_mean, mu_t_minus_1, pred_epsilon, pred_epsilon_guided, z_score, weighted_z_score, x0_hat_unguided, x0_hat_guided
+            self.prior_score = -pred_epsilon / self.extract(self.sqrt_one_minus_alpha_bars, timestep, noisy_x.shape)
+            self.posterior_score = -pred_epsilon_guided / self.extract(
+                self.sqrt_one_minus_alpha_bars, timestep, noisy_x.shape
+            )
+            self.guidance_score = self.posterior_score - self.prior_score
 
     def conditional_sample(
         self,
@@ -124,31 +165,20 @@ class DiVA_Inference(DiVA):
         mu, logvar = self.infnet(target_image)
         z_sample = self.infnet.sample(mu, logvar)
 
+        self.x0_estimates = torch.empty(self.n_times, N, self.img_C, self.img_H, self.img_W)
+
         for t in range(self.n_times - 1, -1, -1):
             self.reverse_one_timestep(self.x_t, t, z_sample)
             with torch.no_grad():
                 target_image_input = target_image_input.expand(N, -1, -1, -1)
                 self.errors[t] = torch.nn.functional.mse_loss(self.x0_hat_guided, target_image_input, reduction="mean")
-                self.prior_score_magnitudes[t] = torch.mean(torch.norm(self.prior_score.view(N, -1), dim=1))
-                self.posterior_score_magnitudes[t] = torch.mean(torch.norm(self.posterior_score.view(N, -1), dim=1))
-                self.guidance_score_magnitudes[t] = torch.mean(torch.norm(self.guidance_score.view(N, -1), dim=1))
-                self.prior_score_std[t] = torch.std(torch.norm(self.prior_score.view(N, -1), dim=1))
-                self.posterior_score_std[t] = torch.std(torch.norm(self.posterior_score.view(N, -1), dim=1))
-                self.guidance_score_std[t] = torch.std(torch.norm(self.guidance_score.view(N, -1), dim=1))
-
-    def conditional_sample_from_z(self, N: int, z: torch.Tensor, seed: int = 0, x_init: torch.Tensor | None = None):
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-
-        # start from random noise vector, x_0 (for simplicity, x_T declared as x_t instead of x_T)
-        if x_init is None:
-            self.x_t = torch.randn((N, self.img_C, self.img_H, self.img_W)).to(self.device).requires_grad_(True)
-        else:
-            self.x_t = x_init.clone().to(self.device).requires_grad_(True)
-        self.initial_x_t = self.x_t
-
-        for t in range(self.n_times - 1, -1, -1):
-            self.reverse_one_timestep(self.x_t, t, z)
+                self.x0_estimates[t] = self.x0_hat_guided.clone()
+                # self.prior_score_magnitudes[t] = torch.mean(torch.norm(self.prior_score.view(N, -1), dim=1))
+                # self.posterior_score_magnitudes[t] = torch.mean(torch.norm(self.posterior_score.view(N, -1), dim=1))
+                # self.guidance_score_magnitudes[t] = torch.mean(torch.norm(self.guidance_score.view(N, -1), dim=1))
+                # self.prior_score_std[t] = torch.std(torch.norm(self.prior_score.view(N, -1), dim=1))
+                # self.posterior_score_std[t] = torch.std(torch.norm(self.posterior_score.view(N, -1), dim=1))
+                # self.guidance_score_std[t] = torch.std(torch.norm(self.guidance_score.view(N, -1), dim=1))
 
     def add_noise_and_denoise(self, target_image_input, t: int = 10, x_t=None):
         assert t > 0, "t must be greater than 0"
@@ -182,58 +212,3 @@ class DiVA_Inference(DiVA):
 
         x0_hat = self.denoise_at_t(noisy_x, pred_epsilon_guided, timestep).detach()
         return x0_hat, noisy_x.detach(), pred_epsilon_guided.detach()
-
-    def conditional_sample_switch(
-        self,
-        N,
-        initial_image_input,
-        target_image_input,
-        return_chain=False,
-        noise_level=999,
-    ):
-        self.x_t = initial_image_input.clone().to(self.device).requires_grad_(True)
-        self.initial_x_t = self.x_t
-
-        # start from random noise vector, x_0 (for simplicity, x_T declared as x_t instead of x_T)
-        self.infnet.eval()
-
-        target_image = target_image_input.clone()
-        target_image = target_image.to(self.device).requires_grad_(True)
-
-        # assuming z_given_xt method
-        z_sample, _, _ = self.infnet(target_image)
-
-        for t in range(noise_level, -1, -1):
-            self.reverse_one_timestep(self.x_t, t, z_sample)
-
-    def reverse_one_timestep_denoiser_only(self, noisy_x, t):
-        """denoiser only"""
-        B, *_ = noisy_x.shape  # batch size
-        if t > 1:
-            z = torch.randn_like(noisy_x, device=self.device)
-        else:
-            z = torch.zeros_like(noisy_x, device=self.device)
-
-        timestep = torch.Tensor([t]).repeat_interleave(B, dim=0).to(torch.long).to(self.device)
-
-        pred_epsilon = self.denoiser(noisy_x, timestep).sample  # = score of p(x_t|x_t+1)
-
-        # use the total predicted noise to denoise the image
-        mu_t_minus_1 = self.predict_mu_t(noisy_x, pred_epsilon, timestep)
-
-        sigma = self.extract(self.sqrt_betas, timestep, noisy_x.shape)
-
-        # and then add noise to this image again
-        self.x_t = mu_t_minus_1 + sigma * z
-
-    def unconditional_sample_denoiser_only(self, N):
-        """sampling using only the denoiser"""
-        # start from random noise vector, x_0 (for simplicity, x_T declared as x_t instead of x_T)
-        self.denoiser.eval()
-
-        # start from random noise vector, x_T
-        self.x_t = torch.randn((N, self.img_C, self.img_H, self.img_W), device=self.device)
-
-        for t in range(self.n_times - 1, -1, -1):
-            # x_t, pred_epsilon = self.reverse_one_timestep_denoiser_only(x_t, t)
-            self.reverse_one_timestep_denoiser_only(self.x_t, t)
