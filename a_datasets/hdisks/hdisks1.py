@@ -1,20 +1,21 @@
-import numpy as np
-import torch
 from typing import Optional, Tuple, Union
 
+import numpy as np
+import torch
 
 # ---------------------------------------------------------------------------- #
 #                       create hierarchical disk dataset                       #
 # ---------------------------------------------------------------------------- #
 
+
 def make_two_disks_img(
     img_size: Union[int, Tuple[int, int], torch.Size],
     outer_radius: Optional[float] = None,
     transition_width: Optional[float] = None,
-    d: Optional[float] = None,    # center-to-center distance
+    d: Optional[float] = None,  # center-to-center distance
     id1: Optional[float] = None,  # intensity disk 1
     id2: Optional[float] = None,  # intensity disk 2
-    ib: Optional[float] = None,   # background intensity
+    ib: Optional[float] = None,  # background intensity
     cx: Optional[float] = None,  # midpoint x
     cy: Optional[float] = None,  # midpoint y
     orientation: Optional[float] = None,  # radians
@@ -24,8 +25,7 @@ def make_two_disks_img(
         img_size = (img_size, img_size)
     assert len(img_size) == 2
 
-    assert d > 2 * outer_radius, "circles must not overlap. \n" \
-    "make d larger than twice the radius of a disk."
+    assert d > 2 * outer_radius, "circles must not overlap. \nmake d larger than twice the radius of a disk."
 
     # Defaults
     if outer_radius is None:
@@ -55,7 +55,7 @@ def make_two_disks_img(
     c2_x, c2_y = cx + dx, cy + dy
 
     # Meshgrid for pixel coordinates
-    y, x = np.ogrid[:img_size[0], :img_size[1]]
+    y, x = np.ogrid[: img_size[0], : img_size[1]]
 
     # Radial distances for each disk
     r1 = np.sqrt((y - c1_y) ** 2 + (x - c1_x) ** 2)
@@ -88,13 +88,13 @@ def make_two_disks_img(
 
 
 def create_two_disk_img_using_global_vars(
-        img_size, outer_radius, transition_width, d,
-        theta, delta_id, ib, cx_01, cy_01):
+    img_size, outer_radius, transition_width, d, theta, delta_id, ib, cx_01, cy_01
+):
     # state the dependency of id on orientation
 
     # make sure that the circles are fully within the image
-    c_min = d/2 + outer_radius
-    c_max = img_size - (d/2 + outer_radius)
+    c_min = d / 2 + outer_radius
+    c_max = img_size - (d / 2 + outer_radius)
 
     # convert coordinates into pixels
     cx = c_min + (c_max - c_min) * cx_01
@@ -106,26 +106,28 @@ def create_two_disk_img_using_global_vars(
     id1 = avg_id + np.cos(theta) * delta_id
     id2 = avg_id - np.cos(theta) * delta_id
 
-    img = make_two_disks_img(
-        img_size, outer_radius, transition_width, d,
-        id1, id2, ib,
-        cx, cy, theta)
+    img = make_two_disks_img(img_size, outer_radius, transition_width, d, id1, id2, ib, cx, cy, theta)
     return img, avg_id, id1, id2
 
 
 def random_two_disk_dataset(
-        delta_id:float=.2,
-        d:float=20, outer_radius:float=8, transition_width:float=2,
-        img_size:int=64, num_imgs:int=1e3,
-        cx_01:Optional[float]=None, cy_01:Optional[float]=None, ib:Optional[float]=None, theta:Optional[float]=None,
-    ):
-    '''The background is a fn of cx and cy.
-    '''
+    delta_id: float = 0.2,
+    d: float = 20,
+    outer_radius: float = 8,
+    transition_width: float = 2,
+    img_size: int = 64,
+    num_imgs: int = 1e3,
+    cx_01: Optional[float] = None,
+    cy_01: Optional[float] = None,
+    ib: Optional[float] = None,
+    theta: Optional[float] = None,
+):
+    """The background is a fn of cx and cy."""
     assert d >= 0 and d <= 32
-    assert d > outer_radius * 2, 'd should be at least 2*outer_radius'
-    assert transition_width >= 0, 'transition_width should be non-negative'
-    assert outer_radius > 0, 'outer_radius should be positive'
-    assert img_size > d, 'img_size should be greater than d'
+    assert d > outer_radius * 2, "d should be at least 2*outer_radius"
+    assert transition_width >= 0, "transition_width should be non-negative"
+    assert outer_radius > 0, "outer_radius should be positive"
+    assert img_size > d, "img_size should be greater than d"
 
     cx_01_init = cx_01
     cy_01_init = cy_01
@@ -157,8 +159,8 @@ def random_two_disk_dataset(
 
         # ------------------------------- local factors ------------------------------ #
         img, avg_id, id1, id2 = create_two_disk_img_using_global_vars(
-            img_size, outer_radius, transition_width, d,
-            theta, delta_id, ib, cx_01, cy_01)
+            img_size, outer_radius, transition_width, d, theta, delta_id, ib, cx_01, cy_01
+        )
         dataset[i] = img
         avg_intensities[i] = avg_id
         cxs[i] = cx_01

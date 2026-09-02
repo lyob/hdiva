@@ -1,27 +1,33 @@
-from torch.utils.data import DataLoader
 import lightning as L
-from a_datasets.custom_dataset_classes import CustomDataset
 from datasets import load_dataset
+from torch.utils.data import DataLoader
 from torchvision import transforms
+
+from a_datasets.custom_dataset_classes import CustomDataset
+
 
 class CelebAColorDataModule(L.LightningDataModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.train_dataset = None
-        self.transform = transforms.Compose([
-            transforms.CenterCrop(160),
-            transforms.Resize((64, 64)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
+        self.transform = transforms.Compose(
+            [
+                transforms.CenterCrop(160),
+                transforms.Resize((64, 64)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
 
     def prepare_data(self):
         """
         Download data. This is called once on the main process.
         """
         # This will download and cache the dataset. It won't be called by other GPUs.
-        load_dataset("flwrlabs/celeba", split='train', cache_dir=self.config.data_cache_dir) # Good practice to specify a cache_dir
+        load_dataset(
+            "flwrlabs/celeba", split="train", cache_dir=self.config.data_cache_dir
+        )  # Good practice to specify a cache_dir
 
     def setup(self, stage: str):
         """
@@ -29,7 +35,7 @@ class CelebAColorDataModule(L.LightningDataModule):
         The data remains on the CPU.
         """
         if stage == "fit":
-            cpu_tensor = load_dataset("flwrlabs/celeba", split='train')
+            cpu_tensor = load_dataset("flwrlabs/celeba", split="train")
             # self.train_dataset = CelebADataset(cpu_tensor, self.transform)
             self.train_dataset = CustomDataset(cpu_tensor, self.transform, with_label=False)
             print(f"Dataset setup complete.")
@@ -40,14 +46,14 @@ class CelebAColorDataModule(L.LightningDataModule):
         """
         # num_workers > 0 spins up subprocesses to load data in the background from the CPU.
         # This prevents the GPU from waiting for data. A good starting point is os.cpu_count().
-        num_workers = 4 * self.config.num_gpus_per_node # Your original logic is good
+        num_workers = 4 * self.config.num_gpus_per_node  # Your original logic is good
 
         # pin_memory=True speeds up the CPU-to-GPU memory transfer.
         return DataLoader(
             self.train_dataset,
             batch_size=self.config.train_batch_size_per_gpu,
             shuffle=True,
-            num_workers=num_workers,    # <-- Use multiple workers
-            pin_memory=True,            # <-- Set to True for GPU training
-            persistent_workers=True if num_workers > 0 else False
+            num_workers=num_workers,  # <-- Use multiple workers
+            pin_memory=True,  # <-- Set to True for GPU training
+            persistent_workers=True if num_workers > 0 else False,
         )

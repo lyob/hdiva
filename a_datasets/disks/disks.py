@@ -1,8 +1,8 @@
 # import wandb
-import torch
-from torch.utils.data import DataLoader, Dataset
-import numpy as np
 from typing import Optional, Tuple, Union
+
+import numpy as np
+import torch
 from torch import Tensor
 
 # ---------------------------------------------------------------------------- #
@@ -21,6 +21,7 @@ from torch import Tensor
 #     dataset = torch.load(f'{dataset_path}/training_data')
 #     return dataset, dataset_description
 
+
 def make_disk_vectorized(
     img_size: Union[int, Tuple[int, int], torch.Size],
     outer_radius: Optional[float] = None,
@@ -30,9 +31,8 @@ def make_disk_vectorized(
     c_x: Optional[float] = None,
     c_y: Optional[float] = None,
 ) -> Tensor:
-
     inner_radius = outer_radius - transition_width
-    
+
     if isinstance(img_size, int):
         img_size = (img_size, img_size)
     assert len(img_size) == 2
@@ -43,9 +43,8 @@ def make_disk_vectorized(
     if inner_radius is None:
         inner_radius = outer_radius / 2
 
-
     # Create a meshgrid for the x, y coordinates
-    y, x = np.ogrid[:img_size[0], :img_size[1]]
+    y, x = np.ogrid[: img_size[0], : img_size[1]]
 
     # Calculate the radial distance for each pixel from the center
     r = np.sqrt((y - c_y) ** 2 + (x - c_x) ** 2)
@@ -61,10 +60,12 @@ def make_disk_vectorized(
     radial_decay = (r - inner_radius) / (outer_radius - inner_radius)
 
     # Apply the radial decay with the cosine function only for pixels between the radii
-    mask[(r >= inner_radius) & (r <= outer_radius)] = background + (foreground - background) * (1 + np.cos(np.pi * radial_decay[(r >= inner_radius) & (r <= outer_radius)])) / 2
+    mask[(r >= inner_radius) & (r <= outer_radius)] = (
+        background
+        + (foreground - background) * (1 + np.cos(np.pi * radial_decay[(r >= inner_radius) & (r <= outer_radius)])) / 2
+    )
 
     return torch.tensor(mask, dtype=torch.float).unsqueeze(0)
-
 
 
 def create_soft_edge_circle_dataset(n_samples=1000, img_size=(32, 32), outer_radius=10, transition_width=2):
@@ -73,14 +74,14 @@ def create_soft_edge_circle_dataset(n_samples=1000, img_size=(32, 32), outer_rad
     outer_radius = 6
     transition_width = 2
     foreground = 0.5
-    
+
     # let's choose to vary the c_x, c_y, and foreground of the circle
     c_min = 6
-    c_max = 32-6
+    c_max = 32 - 6
     c_x = c_min + np.random.rand(n_samples) * (c_max - c_min)
     c_y = c_min + np.random.rand(n_samples) * (c_max - c_min)
     background = np.random.rand(n_samples)
-    
+
     disks = []
     for i in range(n_samples):
         disk = make_disk_vectorized(
@@ -95,7 +96,7 @@ def create_soft_edge_circle_dataset(n_samples=1000, img_size=(32, 32), outer_rad
         disks.append(disk)
     # disks = torch.tensor(np.array(disks))
     disks = torch.stack(disks)
-    
+
     return disks, c_x, c_y, background
 
 
@@ -116,11 +117,11 @@ def create_one_circle(c_x, c_y, background):
     outer_radius = 10
     transition_width = 2
     foreground = 0.5
-    
+
     # let's choose to vary the c_x, c_y, and foreground of the circle
     c_min = 10
-    c_max = 32-10
-    
+    c_max = 32 - 10
+
     assert c_x >= c_min and c_x <= c_max
     assert c_y >= c_min and c_y <= c_max
     assert background >= 0 and background <= 1
@@ -134,37 +135,37 @@ def create_one_circle(c_x, c_y, background):
         c_x=c_x,
         c_y=c_y,
     )
-    
+
     return disk, c_x, c_y, background
 
 
 def create_one_circle_fractional_1(c_x, c_y, foreground=1, outer_radius=10, transition_width=2):
-    '''both cx and cy are fractional values between -1 and 1. The background is a fn of cx and cy.'''
+    """both cx and cy are fractional values between -1 and 1. The background is a fn of cx and cy."""
     # c_x = c_x * 32 + 16
     # c_y = c_y * 32 + 16
-    
+
     img_size = (32, 32)
-    
+
     # let's choose to vary the c_x, c_y, and foreground of the circle
     c_min = 10
-    c_max = 32-10
-    
+    c_max = 32 - 10
+
     # cx = (c_x-16)/32
     # cy = (c_y-16)/32
     # background = (cx**2 + cy**2) * 30
-    cx = (c_x - c_min)/(c_max-c_min)
-    cy = (c_y - c_min)/(c_max-c_min)
+    cx = (c_x - c_min) / (c_max - c_min)
+    cy = (c_y - c_min) / (c_max - c_min)
     # print('c_x', c_x)
     # print('c_y', c_y)
     # print('cx', cx)
     # print('cy', cy)
     background = np.sqrt(cx**2 + cy**2) / np.sqrt(2)
     # print(background)
-    
+
     assert c_x >= c_min and c_x <= c_max
     assert c_y >= c_min and c_y <= c_max
     assert background >= 0 and background <= 1
-    
+
     disk = make_disk_vectorized(
         img_size,
         outer_radius,
@@ -174,24 +175,26 @@ def create_one_circle_fractional_1(c_x, c_y, foreground=1, outer_radius=10, tran
         c_x=c_x,
         c_y=c_y,
     )
-    
+
     return disk, c_x, c_y, background
 
-def create_one_circle_fractional_2(c_x, c_y, foreground=1, outer_radius=10, transition_width=2):
-    '''both cx and cy are fractional values between 0 and 1. The background is a fn of cx and cy.'''
+
+def create_one_circle_fractional_2(c_x, c_y, foreground=1, background:Optional[float]=None, outer_radius=10, transition_width=2):
+    """both cx and cy are fractional values between 0 and 1. The background is a fn of cx and cy."""
     img_size = (32, 32)
-    
+
     # let's choose to vary the c_x, c_y, and foreground of the circle
     c_min = 10
-    c_max = 32-10
-    
+    c_max = 32 - 10
+
     # cx = (c_x)/32
     # cy = (c_y)/32
     cx = (c_x - c_min) / (c_max - c_min) * 2 - 1
     cy = (c_y - c_min) / (c_max - c_min) * 2 - 1
-    background = np.sqrt((cx**2 + cy**2)) / np.sqrt(2)
+    if background is None:
+        background = np.sqrt((cx**2 + cy**2)) / np.sqrt(2)
     # print(background)
-    
+
     assert c_x >= c_min and c_x <= c_max
     assert c_y >= c_min and c_y <= c_max
     assert background >= -1 and background <= 1
@@ -205,5 +208,58 @@ def create_one_circle_fractional_2(c_x, c_y, foreground=1, outer_radius=10, tran
         c_x=c_x,
         c_y=c_y,
     )
-    
+
     return disk, c_x, c_y, background
+
+def create_one_circle_fractional_3(c_x: float, c_y: float, foreground: float = 1, background:Optional[float]=None, img_size: int = 32, outer_radius: int = 10, transition_width: int = 2):
+    """both cx and cy are fractional values between 0 and 1. The background is a fn of cx and cy."""
+    
+    assert img_size > 2 * outer_radius
+
+    c_min = outer_radius
+    c_max = img_size - outer_radius
+
+    cx = (c_x - c_min) / (c_max - c_min) * 2 - 1
+    cy = (c_y - c_min) / (c_max - c_min) * 2 - 1
+    if background is None:
+        background = np.sqrt((cx**2 + cy**2)) / np.sqrt(2)
+
+    assert c_x >= c_min and c_x <= c_max
+    assert c_y >= c_min and c_y <= c_max
+    assert foreground >= -1 and foreground <= 1
+    assert background >= -1 and background <= 1
+
+    disk = make_disk_vectorized(
+        (img_size, img_size),
+        outer_radius,
+        transition_width,
+        foreground=foreground,
+        background=background,
+        c_x=c_x,
+        c_y=c_y,
+    )
+
+    return disk, c_x, c_y
+
+
+def create_simple_disk_dataset(n_samples: int = int(25e3), img_size: int = 28, outer_radius: int = 6, transition_width: int = 2):
+    """Create a simple disk dataset."""
+
+    c_min = outer_radius
+    c_max = img_size - outer_radius
+
+    # dataset of uniformly sampled variables
+    cxs = c_min + np.random.rand(n_samples) * (c_max - c_min)
+    cys = c_min + np.random.rand(n_samples) * (c_max - c_min)
+
+    random_disks = torch.ones(n_samples, 1, img_size, img_size) * torch.nan
+    dataset_cxs = torch.ones(n_samples) * torch.nan
+    dataset_cys = torch.ones(n_samples) * torch.nan
+
+    for i, (cx, cy) in enumerate(zip(cxs, cys)):
+        random_disk, cx, cy = create_one_circle_fractional_3(c_x=cx, c_y=cy, background=0, img_size=img_size, outer_radius=outer_radius, transition_width=transition_width)
+        random_disks[i] = random_disk
+        dataset_cxs[i] = cx
+        dataset_cys[i] = cy
+
+    return random_disks, dataset_cxs, dataset_cys
