@@ -5,6 +5,25 @@ project_dir = "/mnt/home/blyo1/hdiva"
 
 
 @dataclass
+class RingDatasetConfig:
+    """Ring dataset parameters"""
+
+    input_dim: int = 2
+    latent_dim_y: int = 2
+    latent_dim_z: int = 2
+
+    dataset_name: str = "ring_flat"
+
+    n: int = 20_000
+    m: int = 4
+    kappa: float = 1.0
+    r0: float = 2.0
+    sigma: float = 0.15
+    seed: int | None = 0
+    return_latents: bool = False
+    data_cache_dir: str = f"{project_dir}/a_datasets/ring/"
+
+@dataclass
 class DspritesDatasetConfig:
     """dsprites dataset parameters"""
 
@@ -604,7 +623,8 @@ class SelectConfig(
     # SAMI_Bump_Training_Config,
     # SAMI_Manual_dSprites_Training_Config,
     # SAMI_SOS_Training_Config,
-    SAMI_Simple_Disk_Training_Config,
+    # SAMI_Simple_Disk_Training_Config,
+    RingDatasetConfig,
     # SAMI_CIS_Training_Config,
     # SAMI_CIS_28_Training_Config,
 ):

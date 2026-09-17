@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from b_models.base_modules.mlp import TimeEmbedding
+
 
 class LinearInfNet(nn.Module):
     def __init__(self, input_dim, z_dim, bias):
@@ -227,7 +229,42 @@ class ConvNetSimple(nn.Module):
         return mu + eps * std
 
 
+class SpatialTimeProjection(nn.Module):
+    """project the time embedding to a single image-shaped channel, to be concatenated with x"""
+
+    def __init__(self, args):
+        super().__init__()
+        self.time_channels = args.time_channels
+        self.image_dim = args.image_dim
+        self.proj = nn.Linear(self.time_channels, self.image_dim**2)  # (B, C_t) => (B, H*W)
+
+    def forward(self, t):
+        return self.proj(t).view(-1, 1, self.image_dim, self.image_dim)
+
+
 class ConvNetComplex(nn.Module):
+    """Convolutional Gaussian encoder, optionally conditioned on the diffusion timestep.
+
+    `args.time_embedding_method_rec` selects the conditioning, mirroring `MLPEncoder`:
+      - "none":      no time input at all (default; `forward(x)` as before).
+      - "as_input":  project the embedding to an image-shaped map and concatenate it
+                     with x as an extra input channel.
+      - "per_layer": add a per-block, per-channel projection of the embedding to every
+                     normalised pre-activation.
+      - "film":      per-block, per-channel scale/shift of the normalised pre-activation,
+                     h <- (1 + scale) * h + shift, with zero-initialised heads so it
+                     starts as identity conditioning.
+
+    Time conditioning matters here because the encoder is applied to *noisy* inputs
+    to form q(z | x_t): the correct posterior width varies by orders of magnitude
+    across noise levels, so a t-independent encoder cannot represent that family.
+    When `time_conditioned` is True, callers must pass `t`.
+
+    Note on "per_layer": BF_BatchNorm's gammas start very small (|g| <= 0.025), so an
+    additive time bias starts out large relative to the features it is added to. "film"
+    starts as the identity and is the safer default with bias-free norms.
+    """
+
     def __init__(self, args):
         super(ConvNetComplex, self).__init__()
 
@@ -244,6 +281,14 @@ class ConvNetComplex(nn.Module):
         aap_output_size = args.adaptive_avg_pool_output_size
 
         assert self.num_layers > 0, "num_layers must be greater than 0"
+
+        self.time_method = getattr(args, "time_embedding_method_rec", "none")
+        if self.time_method not in ("none", "as_input", "per_layer", "film"):
+            raise ValueError(
+                f"Unknown time_embedding_method_rec: {self.time_method}, "
+                'expected "none", "as_input", "per_layer" or "film"'
+            )
+        self.time_conditioned = self.time_method != "none"
 
         # for i in range(self.num_layers):
         #     self.num_channels.append(args.num_kernels_rec)
@@ -265,13 +310,39 @@ class ConvNetComplex(nn.Module):
         else:
             raise ValueError(f"Unsupported normalization type: {norm}")
 
+        """time conditioning"""
+        if self.time_conditioned:
+            self.time_channels = args.time_channels
+            self.time_emb = TimeEmbedding(args)
+            if self.time_method == "as_input":
+                self.time_projection = SpatialTimeProjection(args)
+            else:
+                self.time_mlp = nn.Sequential(
+                    nn.Linear(self.time_channels, self.time_channels),
+                    nn.SiLU(),
+                )
+                # one head per conv block, sized to that block's channel count
+                self.time_heads = nn.ModuleList(
+                    [
+                        nn.Linear(self.time_channels, c if self.time_method == "per_layer" else 2 * c)
+                        for c in self.num_channels
+                    ]
+                )
+                if self.time_method == "film":
+                    # start at scale=0, shift=0 so conditioning begins as the identity
+                    for head in self.time_heads:
+                        nn.init.zeros_(head.weight)
+                        nn.init.zeros_(head.bias)
+
         """convolutional layers"""
         self.input_channels = args.num_channels
         self.input_dims = args.image_dim
 
         # add two of the following: conv then batch norm then nonlinearity
+        # the (conv, norm, nonlin) layout is kept identical under every time method so
+        # that state dicts stay compatible; the conditioned forward indexes into it
         self.convs = nn.ModuleList()
-        current_input_channels = self.input_channels
+        current_input_channels = self.input_channels + (1 if self.time_method == "as_input" else 0)
         for i in range(self.num_layers):
             self.convs.append(
                 nn.Sequential(
@@ -307,15 +378,42 @@ class ConvNetComplex(nn.Module):
         """calculate the output dimensions of a convolutional layer, for a given input dimension and convolutional settings"""
         return (input_dim - kernel_size + 2 * padding) // stride + 1
 
-    def forward(self, x):
-        for i in range(1, self.num_layers + 1):
-            x = self.convs[i - 1](x)
+    def forward(self, x, t=None):
+        if not self.time_conditioned:
+            for block in self.convs:
+                x = block(x)
+            return self.head(x)
+
+        if t is None:
+            raise ValueError(
+                "ConvNetComplex was built with time_embedding_method_rec="
+                f'"{self.time_method}" and requires a timestep t'
+            )
+        emb = self.time_emb(t.float())
+
+        if self.time_method == "as_input":
+            x = torch.cat([x, self.time_projection(emb)], dim=1)
+            for block in self.convs:
+                x = block(x)
+            return self.head(x)
+
+        emb = self.time_mlp(emb)
+        for block, time_head in zip(self.convs, self.time_heads):
+            conv, norm, nonlin = block[0], block[1], block[2]
+            x = norm(conv(x))
+            if self.time_method == "per_layer":
+                x = x + time_head(emb)[:, :, None, None]
+            else:  # film
+                scale, shift = time_head(emb).chunk(2, dim=1)
+                x = (1 + scale[:, :, None, None]) * x + shift[:, :, None, None]
+            x = nonlin(x)
+        return self.head(x)
+
+    def head(self, x):
+        """pool, flatten and read out the Gaussian parameters"""
         x = self.pool(x)
         x = torch.flatten(x, start_dim=1)
-        mu = self.linear_mu(x)
-        logvar = self.linear_logvar(x)
-
-        return mu, logvar
+        return self.linear_mu(x), self.linear_logvar(x)
 
     def sample(self, mu, logvar):
         std = (0.5 * logvar).exp()

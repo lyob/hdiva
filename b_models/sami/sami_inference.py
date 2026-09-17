@@ -138,7 +138,7 @@ class SAMI_Inference(SAMI):
 
         # get the score of the log posterior
         noisy_x = noisy_x.detach().requires_grad_(True)
-        mu_t, logvar_t = self.infnet(noisy_x)
+        mu_t, logvar_t = self.encode(self.infnet, noisy_x, timestep)
         log_p_z = self.compute_log_posterior(mu_t, logvar_t, z_sample)
         z_score = self.compute_score_inference(log_p_z, noisy_x)
 
@@ -234,7 +234,7 @@ class SAMI_Inference(SAMI):
         target_image = target_image.to(self.device).requires_grad_(True)
 
         # assuming z_given_xt method
-        mu, logvar = self.infnet(target_image)
+        mu, logvar = self.encode(self.infnet, target_image, None)
         z_sample = self.infnet.sample(mu, logvar)
 
         self.x0_estimates = torch.empty(self.n_times, N, self.img_C, self.img_H, self.img_W)
@@ -283,10 +283,10 @@ class SAMI_Inference(SAMI):
         target_image = target_image.to(self.device).requires_grad_(True)
 
         # assuming z_given_xt method
-        mu, logvar = self.infnet(target_image)
+        mu, logvar = self.encode(self.infnet, target_image, None)
         z_sample = self.infnet.sample(mu, logvar)
 
-        mu_t, logvar_t = self.infnet(noisy_x)
+        mu_t, logvar_t = self.encode(self.infnet, noisy_x, timestep)
         log_p_z = self.compute_log_posterior(mu_t, logvar_t, z_sample)
         z_score = self.compute_score_inference(log_p_z, noisy_x)
 
@@ -331,7 +331,7 @@ class SAMI_Inference(SAMI):
         target_image = target_image.to(self.device).requires_grad_(True)
 
         # assuming z_given_xt method
-        mu, logvar = self.infnet(target_image)
+        mu, logvar = self.encode(self.infnet, target_image, None)
         z_sample = self.infnet.sample(mu, logvar)
         self.x0_estimates = torch.empty(t, 1, self.img_C, self.img_H, self.img_W)
 

@@ -55,6 +55,19 @@ class SAMI(DDPM):
         self.weighted_rate = weighted_rate
 
 
+    @staticmethod
+    def encode(encoder, x, t=None):
+        """Call the encoder, passing the timestep only if it was built to use one.
+
+        Keeps time-independent encoders (the default) working unchanged. `t=None`
+        means "this is the clean view", which is timestep 0.
+        """
+        if not getattr(encoder, "time_conditioned", False):
+            return encoder(x)
+        if t is None:
+            t = torch.zeros(x.shape[0], device=x.device)
+        return encoder(x, t)
+
     def compute_log_posterior(self, mu, logvar, z_sample):
         z_dim = mu.shape[-1]
         var = logvar.exp().clamp(min=1e-8)
@@ -104,15 +117,15 @@ class SAMI(DDPM):
         )[0]
         return score
 
-    def compute_score(self, mu, logvar, noisy_x):
+    def compute_score(self, mu, logvar, noisy_x, t=None):
         z_sample = self.infnet.sample(mu, logvar)
-        mu_t, logvar_t = self.infnet(noisy_x)
+        mu_t, logvar_t = self.encode(self.infnet, noisy_x, t)
         log_p_z = self.compute_log_posterior(mu_t, logvar_t, z_sample)
         score = self.compute_score_from_logp(log_p_z, noisy_x)
         return score
 
-    
-    def compute_score_and_rate(self, encoder, noisy_x, clean_x, gamma):
+
+    def compute_score_and_rate(self, encoder, noisy_x, clean_x, gamma, t=None):
         """
         Arguments:
             encoder: the infnet encoder that maps from images to latent space parameters (mu, logvar)
@@ -126,11 +139,11 @@ class SAMI(DDPM):
         # --- Standard Forward Pass ---
         # with torch.no_grad():
         clean_x = clean_x.detach()
-        mu, logvar = encoder(clean_x)
+        mu, logvar = self.encode(encoder, clean_x, None)  # clean view == timestep 0
         z_sample = self.infnet.sample(mu, logvar)
 
         # --- Score via standard backward pass ---
-        mu_t, logvar_t = encoder(noisy_x)
+        mu_t, logvar_t = self.encode(encoder, noisy_x, t)
         log_posterior = self.compute_log_posterior(mu_t, logvar_t, z_sample)
         score = self.compute_score_from_logp(log_posterior, noisy_x)
 
@@ -145,11 +158,12 @@ class SAMI(DDPM):
                 rate = rate_weight * rate
 
         elif self.rate_type == "norm":
-            rate = score.norm(dim=[1, 2, 3])
+            # rate = score.norm(dim=[1, 2, 3])
+            rate = score.flatten(1).norm(dim=1).square()
         elif self.rate_type == "cumulative":
             rate = self.compute_kl(mu_t, logvar_t, mu, logvar)
         elif self.rate_type == "kl":
-            rate = self.compute_kl_against_zero(mu_t, logvar_t)
+            rate = self.compute_kl_against_zero(mu, logvar)
         else:
             raise ValueError(f"Invalid rate_type: {self.rate_type}")
 
@@ -168,7 +182,7 @@ class SAMI(DDPM):
         noisy_x = noisy_x.detach().requires_grad_(True)
 
         gamma = self.extract(self.one_minus_alpha_bars, t_tensor, clean_x.shape)
-        z_score, rate = self.compute_score_and_rate(self.infnet, noisy_x, clean_x, gamma)
+        z_score, rate = self.compute_score_and_rate(self.infnet, noisy_x, clean_x, gamma, t_tensor)
 
         if self.parameterization == "noise":
             pred_noise = self.denoiser(noisy_x, t_tensor)  # = instantaneous entropy
@@ -275,8 +289,8 @@ class SAMI(DDPM):
         noisy_x, noise = self.make_noisy(clean_x, t_tensor)
         noisy_x = noisy_x.detach()
 
-        mu, logvar = self.infnet(clean_x)
-        mu_t, logvar_t = self.infnet(noisy_x)
+        mu, logvar = self.encode(self.infnet, clean_x, None)
+        mu_t, logvar_t = self.encode(self.infnet, noisy_x, t_tensor)
 
         # KL between the noisy image posterior and clean image posterior
         kl_cumulative_t0 = self.compute_kl(mu_t, logvar_t, mu, logvar)
