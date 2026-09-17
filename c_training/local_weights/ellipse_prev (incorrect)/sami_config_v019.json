@@ -1,0 +1,56 @@
+{
+    "seed": 0,
+    "batch_size": 2000,
+    "num_epochs": 800.0,
+    "lr": 0.0003,
+    "log_every_n_epochs": 200,
+    "pretrained_denoiser": 1,
+    "freeze_denoiser": false,
+    "model_name": "sami_ellipse",
+    "reduction": "sum",
+    "weighted_mse": false,
+    "weighted_rate": false,
+    "rate_type": "kl",
+    "beta_init": 0.05,
+    "infnet_type": "mlp",
+    "num_layers_rec": 2,
+    "hidden_dim_rec": 32,
+    "activation_rec": "gelu",
+    "latent_dim": 2,
+    "bias_rec": true,
+    "time_embedding_method_rec": "as_input",
+    "timestep_dist": "uniform",
+    "num_timesteps": 100,
+    "beta_minmax": [
+        0.0001,
+        0.02
+    ],
+    "sigma_minmax": [
+        0.0001,
+        0.9999
+    ],
+    "noise_schedule": "cosine_in_alpha_bar",
+    "denoiser_type": "mlp",
+    "parameterization": "noise",
+    "denoiser_act_fn": "relu",
+    "bias": false,
+    "time_embedding_method": "as_input",
+    "hidden_dim": 32,
+    "num_layers": 2,
+    "time_channels": 32,
+    "num_samples": 20000,
+    "input_dim": 2,
+    "dataset_name": "ellipse",
+    "noise": 0.0,
+    "scales": [
+        [
+            4.0,
+            1.0
+        ]
+    ],
+    "rotation": [
+        30.0
+    ],
+    "return_latents": false,
+    "data_cache_dir": "/mnt/home/blyo1/hdiva/a_datasets/ellipse/"
+}
