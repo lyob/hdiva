@@ -1,4 +1,5 @@
-from b_models.base_modules.convnet import ConvNetComplex, ConvNetSimple, MLPEncoder
+from b_models.base_modules.convnet import (ConvNetComplex, ConvNetSimple,
+                                           MLPEncoder, ResNet)
 from b_models.base_modules.half_unet import Half_UNet
 from b_models.base_modules.unet import UNet
 from b_models.ddpm.ddpm_module import DDPM
@@ -79,11 +80,14 @@ def init_sami_model(config):
             infnet = Half_UNet(config)
         elif config.infnet_type == "convnet":
             if config.convnet_type == "complex":
+                # infnet = ConvNetComplex(config.convnet_config)
                 infnet = ConvNetComplex(config)
             elif config.convnet_type == "simple":
                 infnet = ConvNetSimple(config)
             else:
                 raise ValueError("invalid convnet type")
+        elif config.infnet_type == "resnet":
+            infnet = ResNet(config)
         else:
             raise ValueError("invalid infnet type")
     else:

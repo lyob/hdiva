@@ -184,6 +184,8 @@ class TrainingConfig:
     num_epochs: int = 80000
     train_batch_size_per_gpu: int = 4000
 
+    lr: float = 1e-3
+    encoder_lr: float = 1e-3  # only gets its own param group when it differs from lr
     lr_schedule: str = "cosine"
     lr_init: float = 1e-3
     lr_final: float = 1e-4
@@ -282,6 +284,8 @@ class SAMI_ConvNet_dSprites_Training_Config(
     # Overrides for TrainingConfig
     num_epochs: int = 700
     train_batch_size_per_gpu: int = 1000
+    lr: float = 5e-3
+    encoder_lr: float = 2e-3
     lr_init: float = 5e-3
     lr_final: float = 3e-3
     lr_num_warmup_epochs: int = 27000
@@ -364,6 +368,8 @@ class SAMI_Bump_Training_Config(
     fraction_unconditional_final: float = 0
     fraction_unconditional_annealing_epochs: int = 400
     train_batch_size_per_gpu: int = 1000
+    lr: float = 6e-3
+    encoder_lr: float = 2e-3
     lr_init: float = 6e-3
     lr_final: float = 3e-3
     lr_num_warmup_epochs: int = 15000
@@ -592,6 +598,8 @@ class SAMI_CIS_28_Training_Config(
     kl_weight_max: float = 1
     kl_annealing_epochs: int = 5000
 
+    lr: float = 1e-2
+    encoder_lr: float = 6e-3
     lr_init: float = 1e-2
     lr_final: float = 5e-3
     lr_num_warmup_epochs: int = 15000

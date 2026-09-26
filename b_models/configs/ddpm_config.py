@@ -5,11 +5,20 @@ project_dir = "/mnt/home/blyo1/hdiva"
 
 
 @dataclass
-class CelebA_64_Config:
+class CelebA_Color_64_Config:
     """dataset parameters"""
 
     image_dim: int = 64
     dataset_name: str = "celeba_color"
+    dataset_size: int = 162770
+    data_cache_dir: str = f"{project_dir}/a_datasets/celeba_color/"
+
+@dataclass
+class CelebA_64_Config:
+    """dataset parameters"""
+
+    image_dim: int = 64
+    dataset_name: str = "celeba"
     dataset_size: int = 162770
     data_cache_dir: str = f"{project_dir}/a_datasets/celeba_color/"
 
@@ -66,15 +75,7 @@ class DiskDatasetConfig:
 
 @dataclass
 class DenoiserConfig:
-    """Denoiser parameters"""
-
-    timestep_dist: str = "uniform"
-    num_timesteps: int = 100
-    beta_minmax: tuple = (1e-4, 2e-2)
-    sigma_minmax: tuple = (0.0001, 0.9999)
-    # noise_schedule: 'linear_in_alpha_bar', 'cosine_in_alpha_bar', 'inverted_cosine_in_alpha_bar'
-    noise_schedule: str = "linear_in_alpha_bar"
-    parameterization: str = "noise"  # "image", "velocity", "noise"
+    """Denoiser parameters, mechanistic settings"""
     denoiser_type: str = "unet"
     denoiser_act_fn: str = "relu"
     num_channels: int = 1  # 3 for color images, 1 for grayscale images
@@ -93,11 +94,18 @@ class DenoiserConfig:
 
 
 @dataclass
-class DDPMConfig:
-    """sami loss"""
+class DDPMConfig(DenoiserConfig):
+    """algorithmic settings"""
 
+    parameterization: str = "noise"  # "image", "velocity", "noise"
+    timestep_dist: str = "uniform"
+    num_timesteps: int = 200
+    noise_schedule: str = "cosine_in_alpha_bar"
+    # noise_schedule: 'linear_in_alpha_bar', 'cosine_in_alpha_bar', 'inverted_cosine_in_alpha_bar'
+    beta_minmax: tuple = (1e-4, 2e-2)
+    sigma_minmax: tuple = (0.0001, 0.9999)
     weighted_mse: bool = False
-    reduction: str = "sum"  # "mean" or "sum"
+    reduction: str = "mean"  # "mean" or "sum"
 
 
 @dataclass
@@ -146,7 +154,6 @@ class ClusterConfig:
 @dataclass
 class DDPM_SOS_Training_Config(
     SOSDatasetConfig,
-    DenoiserConfig,
     DDPMConfig,
     TrainingConfig,
     PretrainingConfig,
@@ -189,7 +196,6 @@ class DDPM_SOS_Training_Config(
 @dataclass
 class DDPM_Simple_Disk_Training_Config(
     DiskDatasetConfig,
-    DenoiserConfig,
     DDPMConfig,
     TrainingConfig,
     PretrainingConfig,
@@ -233,7 +239,6 @@ class DDPM_Simple_Disk_Training_Config(
 @dataclass
 class DDPM_CIS_Training_Config(
     CircleInSquareDatasetConfig,
-    DenoiserConfig,
     DDPMConfig,
     TrainingConfig,
     PretrainingConfig,
@@ -250,9 +255,46 @@ class DDPM_CIS_Training_Config(
 
 
 @dataclass
-class DDPM_CelebA_64_Training_Config(
-    CelebA_64_Config,
-    DenoiserConfig,
+class DDPM_DSprites_Training_Config(
+    DSprites_64_Config,
+    DDPMConfig,
+    TrainingConfig,
+    PretrainingConfig,
+    ClusterConfig,
+):
+    """model"""
+
+    model_name: str = "ddpm_dsprites"
+
+    num_epochs: int = 1000
+    train_batch_size_per_gpu: int = 1000
+    lr_schedule: str = "cosine"
+    lr_init: float = 3e-4
+    lr_final: float = 3e-4
+    lr_num_warmup_epochs: int = 100  # this is actually the number of steps
+    # precision: str = "bf16-mixed"
+    precision: str = "32"
+    seed: int = 43
+    
+    resume_from_checkpoint: bool = False  # master switch for using checkpoint
+    
+    strategy: str = "ddp"  # "ddp" or "deepspeed_stage_2"
+    num_nodes: int = 1
+    num_gpus_per_node: int = 8
+
+    # logging
+    log_every_n_steps: int = 10
+    checkpoint_every_n_epochs: int = 200
+
+    @classmethod
+    def from_dict(cls, d: dict):
+        field_names = {field.name for field in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in field_names})
+
+
+@dataclass
+class DDPM_CelebA_Color_64_Training_Config(
+    CelebA_Color_64_Config,
     DDPMConfig,
     TrainingConfig,
     PretrainingConfig,
@@ -300,7 +342,7 @@ class DDPM_CelebA_64_Training_Config(
     train_infnet_only: bool = False
     train_denoiser_from_scratch: bool = True
     precision: str = "32"
-    data_cache_dir: str = "/mnt/home/blyo1/ceph/projects/diva/datasets/celeba_color/"  # path to cache the dataset
+    data_cache_dir: str = "/mnt/home/blyo1/ceph/projects/hdiva/a_datasets/celeba_color/"  # path to cache the dataset
 
     """cluster"""
     strategy: str = "ddp"  # "ddp" or "deepspeed_stage_2"
@@ -319,7 +361,76 @@ class DDPM_CelebA_64_Training_Config(
 
 
 @dataclass
-class SelectConfig(DDPM_Simple_Disk_Training_Config):
+class DDPM_CelebA_64_Training_Config(
+    CelebA_64_Config,
+    DDPMConfig,
+    TrainingConfig,
+    PretrainingConfig,
+    ClusterConfig,
+):
+    """model"""
+
+    model_name: str = "ddpm_celeba_64"
+
+    """Denoiser parameters"""
+    timestep_dist: str = "uniform"
+    num_timesteps: int = 1000
+    beta_minmax: tuple = (1e-4, 2e-2)
+    sigma_minmax: tuple = (0.0001, 0.9999)
+    noise_schedule: str = "cosine_in_alpha_bar"  # 'linear_in_beta', 'cosine_in_alpha_bar'
+    denoiser_type: str = "unet"
+
+    denoiser_act_fn: str = "relu"
+    num_channels: int = 1  # 3 for color images, 1 for grayscale images
+    num_kernels: int = 128
+    kernel_size: int = 3
+    padding: int = 1
+    bias: bool = False
+    time_embedding_method: str = "as_input"  # as_input, as_channel
+    time_channels: int = 64
+    num_blocks: int = 3  # number of downsampling/upsampling blocks in UNet
+    num_enc_conv: int = 2  # number of conv layers in each downsampling block
+    num_mid_conv: int = 2  # number of conv layers in middle block
+    num_dec_conv: int = 2  # number of conv layers in each upsampling
+    pool_window: int = 2
+
+    """diva"""
+    weighted_MSE: bool = False
+    reduction: str = "mean"  # "mean" or "sum"
+
+    """training"""
+    num_epochs = 1000
+    train_batch_size_per_gpu: int = 512
+    lr_schedule: str = "cosine"
+    lr_init: float = 1e-3
+    lr_final: float = 1e-3
+    lr_num_warmup_epochs: int = 50
+    seed = 43
+    train_infnet_only: bool = False
+    train_denoiser_from_scratch: bool = True
+    precision: str = "32"
+    data_cache_dir: str = "/mnt/home/blyo1/ceph/projects/hdiva/a_datasets/celeba_color/"  # path to cache the dataset
+
+    """cluster"""
+    strategy: str = "ddp"  # "ddp" or "deepspeed_stage_2"
+    # zero_opt_stage: int = 2
+    num_nodes: int = 2
+    num_gpus_per_node: int = 4
+
+    """logging"""
+    log_every_n_steps: int = 20
+    checkpoint_every_n_epochs: int = 100
+
+    @classmethod
+    def from_dict(cls, d: dict):
+        field_names = {field.name for field in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in field_names})
+
+
+@dataclass
+class Config(
+    DDPM_CelebA_64_Training_Config
+):
     @classmethod
     def from_dict(cls, d: dict):
         field_names = {field.name for field in fields(cls)}

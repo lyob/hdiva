@@ -68,10 +68,12 @@ def get_checkpoint_dir(
     if not os.path.exists(checkpoint_dir):
         raise ValueError(f"Checkpoint directory {checkpoint_dir} does not exist.")
 
-    for dir in os.listdir(checkpoint_dir):
-        if dir.startswith(model_num):
-            checkpoint_dir = f"{checkpoint_dir}/{dir}"
-            break
+    # run dirs are named "<model_num>-<run name>-<run id>", so match the leading number exactly
+    # (a prefix match would let model 1 pick up 10, 11, ...)
+    matches = [d for d in os.listdir(checkpoint_dir) if d.split("-")[0] == model_num]
+    if len(matches) != 1:
+        raise ValueError(f"expected one run dir for model {model_num} in {checkpoint_dir}, found {matches}")
+    checkpoint_dir = f"{checkpoint_dir}/{matches[0]}"
 
     if epoch is not None and epoch != "last" and epoch != "latest":
         checkpoint_dir = f"{checkpoint_dir}/epoch={epoch}.ckpt"

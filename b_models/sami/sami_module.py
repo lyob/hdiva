@@ -85,8 +85,7 @@ class SAMI(DDPM):
             kl: Scalar, KL divergence after reduction (sum over z_dim, mean over batch).
         """
         kl_per_dim = 0.5 * (logvar.exp().clamp(min=1e-8) + mu.pow(2) - 1 - logvar)
-        # if reduction is sum, sum over dimensions, mean over batch
-        return kl_per_dim.mean() if self.reduction == "mean" else kl_per_dim.sum(dim=1).mean()
+        return kl_per_dim.sum(dim=1).mean()  # sum over z_dim, mean over batch
 
     def compute_kl(self, mu0, logvar0, mu1, logvar1):
         """
@@ -98,13 +97,13 @@ class SAMI(DDPM):
             mean of p1. Tensor of shape (B, z_dim).
             logvar of p1. Tensor of shape (B, z_dim).
         Returns:
-            kl: Scalar, KL divergence after reduction (sum over z_dim, reduction over batch).
+            kl: Scalar, KL divergence after reduction (sum over z_dim, mean over batch).
         """
         kl = 0.5 * (
             logvar1 - logvar0 + (logvar0.exp() + (mu0 - mu1) ** 2) / logvar1.exp() - 1
         )
         kl = kl.sum(dim=-1)  # sum over z_dim
-        return kl.mean() if self.reduction == "mean" else kl.sum()  # reduce over batch
+        return kl.mean()  # mean over batch
 
     def compute_score_from_logp(self, log_p, noisy_x):
         # get the log posterior score
@@ -247,31 +246,25 @@ class SAMI(DDPM):
         if self.weighted_mse:
             mse_loss = weight * mse_loss
 
-        # always average over batch, but sum/avg over other dimensions
-        mse_loss = (
-            mse_loss.mean() if self.reduction == "mean" 
-            else mse_loss.mean(dim=0).sum()
-        )
+        # Both terms are per-sample totals (nats per sample), averaged over batch:
+        # distortion sums over data dims, rate sums over data dims (grad/norm) or z_dim (kl/cumulative).
+        mse_loss = mse_loss.flatten(1).sum(dim=1).mean()
 
         if self.rate_type == "grad":
-            rate_loss = (
-                rate.mean() if self.reduction == "mean" 
-                else rate.mean(dim=0).sum()
-            )
-            # reduce over spatial dimensions, then avg over batch
-        elif self.rate_type == "cumulative":
-            rate_loss = rate
+            rate_loss = rate.flatten(1).sum(dim=1).mean()  # (B, C, H, W) -> sum over data dims
         elif self.rate_type == "norm":
-            rate_loss = (
-                rate.mean() if self.reduction == "mean" 
-                else rate.mean(dim=0).sum()
-            )
-        elif self.rate_type == "kl":
-            rate_loss = rate
+            rate_loss = rate.mean()  # (B,) squared norm, already summed over data dims
+        else:  # "kl" / "cumulative"
+            rate_loss = rate  # already summed over z_dim, mean over batch
 
-        rate_loss = rate_loss.mean()  # average over batch
+        # "mean" rescales the whole objective by the data dimension (per-pixel units),
+        # so the rate/distortion ratio, and hence beta, is the same as under "sum".
+        if self.reduction == "mean":
+            data_dim = prediction[0].numel()
+            mse_loss = mse_loss / data_dim
+            rate_loss = rate_loss / data_dim
 
-        total_loss = mse_loss + beta * rate_loss  # average over batch
+        total_loss = mse_loss + beta * rate_loss
 
         return total_loss, mse_loss, rate_loss
 

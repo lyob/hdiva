@@ -10,13 +10,10 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
 from a_datasets.dataset_lightning import GeneralDataModule
-from b_models.sami.sami_lightning import SAMI_Lightning
 from b_models.configs.sami_config import SelectConfig
-from utils.training import (
-    WandbArtifactCallback,
-    get_checkpoint_dir,
-    rename_checkpoint_folder,
-)
+from b_models.sami.sami_lightning import SAMI_Lightning
+from utils.training import (WandbArtifactCallback, get_checkpoint_dir,
+                            rename_checkpoint_folder)
 
 
 # Training script
@@ -58,6 +55,7 @@ def main():
     # Initialize the model
     if config.resume_from_checkpoint:
         if config.use_pretrained_denoiser_only:
+            # the pre-trained ddpm is loaded later in the SAMI_Lightning class, so we can just initialize the model here 
             model = SAMI_Lightning(config=config)
         else:
             # resume from full diva checkpoint

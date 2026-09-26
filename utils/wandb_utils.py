@@ -1,4 +1,5 @@
 import os
+import time
 
 import torch
 import wandb
@@ -18,20 +19,52 @@ def get_wandb_run_name(
 ):
     """find the artifact name, e.g. "model-kt6xg4ur"""
     print(checkpoint_dir)
-    if isinstance(model_num, int):
-        model_num = str(model_num)
+    model_num = str(model_num)
 
-    for dir in os.listdir(checkpoint_dir):
-        if dir.startswith(model_num):
-            checkpoint_dir = f"{checkpoint_dir}/{dir}"
-            break
+    # run dirs are named "<model_num>-<run name>-<run id>", so match the leading number exactly
+    # (a prefix match would let model 1 pick up 10, 11, ...)
+    matches = [d for d in os.listdir(checkpoint_dir) if d.split("-")[0] == model_num]
+    if len(matches) != 1:
+        raise ValueError(f"expected one run dir for model {model_num} in {checkpoint_dir}, found {matches}")
 
-    # get the folder after /
-    wandb_run_name = checkpoint_dir.split("/")[-1]
-    wandb_run_name = wandb_run_name.split("-")[-1]
+    wandb_run_name = matches[0].split("-")[-1]
     # wandb_run_name = "-".join(wandb_run_name)
     print(f"wandb run name: {wandb_run_name}")
     return wandb_run_name
+
+
+def download_artifact_rank0(model_artifact, root: str, timeout: int = 900, poll_every: int = 2):
+    """Download a wandb artifact once, on global rank 0 only.
+
+    Every rank calls this, but only rank 0 writes to `root`; the others wait for a
+    sentinel file that rank 0 drops after the download returns. Without this, all
+    ranks race to write the same .ckpt and the losers torch.load a half-written
+    file ("PytorchStreamReader ... archive is corrupted").
+
+    This runs during model __init__, before the process group exists, so it uses a
+    file sentinel rather than torch.distributed.barrier().
+    """
+    rank = int(os.environ.get("RANK", 0))
+    sentinel = os.path.join(root, ".download_complete")
+
+    if rank == 0:
+        # Clear any sentinel from a previous run so other ranks can't read it as
+        # a go-ahead while this download is still in flight.
+        if os.path.exists(sentinel):
+            os.remove(sentinel)
+        model_dir = model_artifact.download(root=root)
+        with open(sentinel, "w") as f:
+            f.write(str(time.time()))
+        return model_dir
+
+    deadline = time.time() + timeout
+    while not os.path.exists(sentinel):
+        if time.time() > deadline:
+            raise TimeoutError(
+                f"rank {rank} waited {timeout}s for rank 0 to download the artifact into {root}"
+            )
+        time.sleep(poll_every)
+    return root
 
 
 def get_artifact(
@@ -51,7 +84,9 @@ def get_artifact(
     # download the artifact and config
     api = wandb.Api()
     model_artifact = api.artifact(f"{entity}/{project_name}/{artifact_name}:{artifact_id}")
-    model_dir = model_artifact.download(root=f"/mnt/home/blyo1/hdiva/artifacts/{artifact_name}:{artifact_id}")
+    model_dir = download_artifact_rank0(
+        model_artifact, root=f"/mnt/home/blyo1/hdiva/artifacts/{artifact_name}:{artifact_id}"
+    )
     model_path = f"{model_dir}/model.ckpt"
     # if this model_path does not exist, look for any .ckpt file in the directory
     if not os.path.exists(model_path):
@@ -126,3 +161,4 @@ def load_pretrained_module_from_wandb(wandb_config, new_model, module_name="deno
 
     except Exception as e:
         print(f"Error loading from wandb: {e}")
+        raise

@@ -11,15 +11,16 @@ from lightning.pytorch.loggers import WandbLogger
 
 # from lightning.pytorch.strategies import DDPStrategy, FSDPStrategy
 from a_datasets.dataset_lightning import GeneralDataModule
+from b_models.configs.ddpm_config import Config
 from b_models.ddpm.ddpm_lightning import DDPM_Lightning
-from b_models.configs.ddpm_config import SelectConfig
-from utils.training import WandbArtifactCallback, get_checkpoint_dir, rename_checkpoint_folder
+from utils.training import (WandbArtifactCallback, get_checkpoint_dir,
+                            rename_checkpoint_folder)
 
 
 # Training script
 def main():
     # ---------------------------------- params ---------------------------------- #
-    config = SelectConfig()
+    config = Config()
     base_dir = config.project_dir
 
     # ------------------------------- run training ------------------------------- #

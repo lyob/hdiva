@@ -97,8 +97,7 @@ class HSAMI(nn.Module):
             kl: Scalar, KL divergence after reduction (sum over z_dim, mean over batch).
         """
         kl_per_dim = 0.5 * (logvar.exp().clamp(min=1e-8) + mu.pow(2) - 1 - logvar)
-        # if reduction is sum, sum over dimensions, mean over batch
-        return kl_per_dim.mean() if self.reduction == "mean" else kl_per_dim.sum(dim=1).mean()
+        return kl_per_dim.sum(dim=1).mean()  # sum over z_dim, mean over batch
 
     def compute_kl(self, mu0, logvar0, mu1, logvar1):
         """
@@ -110,13 +109,13 @@ class HSAMI(nn.Module):
             mean of p1. Tensor of shape (B, z_dim).
             logvar of p1. Tensor of shape (B, z_dim).
         Returns:
-            kl: Scalar, KL divergence after reduction (sum over z_dim, reduction over batch).
+            kl: Scalar, KL divergence after reduction (sum over z_dim, mean over batch).
         """
         kl = 0.5 * (
             logvar1 - logvar0 + (logvar0.exp() + (mu0 - mu1) ** 2) / logvar1.exp() - 1
         )
         kl = kl.sum(dim=-1)  # sum over z_dim
-        return kl.mean() if self.reduction == "mean" else kl.sum()  # reduce over batch
+        return kl.mean()  # mean over batch
 
     def compute_score_from_logp(self, log_p, noisy_x):
         # get the log posterior score
@@ -170,7 +169,7 @@ class HSAMI(nn.Module):
                 rate = rate_weight * rate
 
         elif self.rate_type == "norm":
-            rate = score.norm(dim=[1, 2, 3])
+            rate = score.flatten(1).pow(2).sum(dim=1)  # ||g||^2, (B,)
         elif self.rate_type == "cumulative":
             rate = self.compute_kl(mu_t, logvar_t, mu, logvar)
         elif self.rate_type == "kl":
@@ -273,10 +272,10 @@ class HSAMI(nn.Module):
 
     def compute_y_rate(self, y_score_wrt_xz, y_score_wrt_z):
         '''compute the rate in Y
-        the rate in Y is the norm of the score ∇_{ye} log p(x|ye, z) = ∇_{ye} log p(ye|x, z) - ∇_{ye} log p(z|ye)
+        the rate in Y is the squared norm of the score ∇_{ye} log p(x|ye, z) = ∇_{ye} log p(ye|x, z) - ∇_{ye} log p(z|ye)
         '''
         y_score_of_z_wrt_ye_and_x = y_score_wrt_xz - y_score_wrt_z
-        rate_y = torch.norm(y_score_of_z_wrt_ye_and_x, dim=[1, 2, 3]).mean()
+        rate_y = y_score_of_z_wrt_ye_and_x.flatten(1).pow(2).sum(dim=1).mean()
         
         return rate_y
 

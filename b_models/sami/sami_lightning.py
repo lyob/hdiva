@@ -1,3 +1,4 @@
+import math
 from dataclasses import asdict
 from types import SimpleNamespace
 from typing import TypedDict
@@ -5,10 +6,10 @@ from typing import TypedDict
 import lightning as L
 import numpy as np
 import torch
-import math
 
 from utils.model_init import init_sami_model
 from utils.wandb_utils import load_pretrained_module_from_wandb
+
 
 # Define the Lightning Module
 class SAMI_Lightning(L.LightningModule):
@@ -76,25 +77,30 @@ class SAMI_Lightning(L.LightningModule):
         return total_loss
 
     def configure_optimizers(self):
-        # Define optimizer
-        lr_init = self.config.lr_init
-        lr_final = self.config.lr_final
-        lr_num_warmup_epochs = self.config.lr_num_warmup_epochs
+        """One constant learning rate, with an optional separate one for the infnet.
+
+        `encoder_lr` only creates a second param group when it actually differs from
+        `lr`; otherwise the whole model trains as a single group.
+        """
+        lr = self.config.lr
+        encoder_lr = self.config.encoder_lr
+
+        if encoder_lr == lr:
+            params = self.model.parameters()
+        else:
+            encoder_params = list(self.model.infnet.parameters())
+            encoder_ids = {id(p) for p in encoder_params}
+            params = [
+                {"params": [p for p in self.model.parameters() if id(p) not in encoder_ids], "lr": lr},
+                {"params": encoder_params, "lr": encoder_lr},
+            ]
+
         if self.config.optimizer == "adam":
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.lr_init)
+            return torch.optim.Adam(params, lr=lr)
         elif self.config.optimizer == "adamw":
-            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.config.lr_init)
+            return torch.optim.AdamW(params, lr=lr)
         else:
             raise ValueError(f"Unknown optimizer: {self.config.optimizer}")
-        lr_schedule = self.config.lr_schedule
-        lr_lambda = lambda epoch: set_lr(lr_init, lr_final, lr_num_warmup_epochs, lr_schedule, epoch) / lr_init
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-        scheduler_config = {
-            "scheduler": scheduler,
-            "interval": "step",  # Update the learning rate at every step
-            "frequency": 1,  # Update every step
-        }
-        return [optimizer], [scheduler_config]
 
     def on_save_checkpoint(self, checkpoint):
         if self.config.train_infnet_only:
@@ -125,24 +131,6 @@ class LogVars(TypedDict):
     on_epoch: bool
     sync_dist: bool
 
-
-def set_lr(lr_init, lr_final, lr_num_warmup_epochs, lr_schedule, current_epoch):
-    if current_epoch >= lr_num_warmup_epochs:
-        return lr_final
-
-    if lr_schedule == "constant":
-        lr = lr_init
-    elif lr_schedule == "linear":
-        lr = lr_init + (lr_final - lr_init) * (current_epoch / lr_num_warmup_epochs)
-    elif lr_schedule == "cosine":
-        lr = lr_final + 0.5 * (lr_init - lr_final) * (
-            1 + math.cos(math.pi * current_epoch / lr_num_warmup_epochs)
-        )
-    elif lr_schedule == "exponential" or lr_schedule == "linear_in_log":
-        lr = lr_init * (lr_final / lr_init) ** (current_epoch / lr_num_warmup_epochs)
-    else:
-        raise ValueError(f"Unknown lr_schedule: {lr_schedule}")
-    return lr
 
 def set_beta(config, current_epoch):
     beta_annealing_schedule = config.beta_annealing_schedule

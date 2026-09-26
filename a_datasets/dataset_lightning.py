@@ -1,19 +1,25 @@
 import lightning as L
+import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from a_datasets.bump.data import load_bump_data
+from a_datasets.celeba_color.data import load_celeba_data
+from a_datasets.celeba_old.data import load_celeba_old_data
 from a_datasets.circle_in_square.data import load_cis_data
 from a_datasets.custom_dataset_classes import CustomTensorDataset
+from a_datasets.disks.data import load_simple_disk_dataset
 from a_datasets.dsprites.dsprites import load_dsprites_data
 from a_datasets.sos.data import load_sos_data
-from a_datasets.disks.data import load_simple_disk_dataset
 
 
 class GeneralDataModule(L.LightningDataModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        # data caches live on a shared filesystem, so only global rank 0 needs to build them;
+        # all other ranks wait at Lightning's pre-setup barrier before calling setup()
+        self.prepare_data_per_node = False
         self.train_dataset = None
         self.transform = transforms.Compose(
             [
@@ -46,6 +52,14 @@ class GeneralDataModule(L.LightningDataModule):
             load_dsprites_data()
         elif self.config.dataset_name == "circle_in_square":
             load_cis_data(img_size=self.config.image_dim)
+        elif self.config.dataset_name in ("celeba", "celeba_color"):
+            load_celeba_data(
+                grayscale=self.config.dataset_name == "celeba",
+                img_size=self.config.image_dim,
+                cache_dir=self.config.data_cache_dir,
+            )
+        elif self.config.dataset_name == "celeba_old":
+            pass  # already stored as a tensor on disk, nothing to download
         else:
             raise ValueError(f"Unknown dataset name: {self.config.dataset_name}")
 
@@ -75,9 +89,22 @@ class GeneralDataModule(L.LightningDataModule):
                 cpu_tensor = load_dsprites_data()
             elif self.config.dataset_name == "circle_in_square":
                 cpu_tensor, _ = load_cis_data()
+            elif self.config.dataset_name in ("celeba", "celeba_color"):
+                cpu_tensor = load_celeba_data(
+                    grayscale=self.config.dataset_name == "celeba",
+                    img_size=self.config.image_dim,
+                    cache_dir=self.config.data_cache_dir,
+                )
+            elif self.config.dataset_name == "celeba_old":
+                cpu_tensor = load_celeba_old_data(trainset_size=self.config.trainset_size, img_size=self.config.image_dims)
             else:
                 raise ValueError(f"Unknown dataset name: {self.config.dataset_name}")
-            self.train_dataset = CustomTensorDataset(cpu_tensor, self.transform)
+
+            transform = self.transform
+            if cpu_tensor.dtype == torch.uint8:
+                # celeba is stored as uint8 to save memory; scale to [0, 1] per sample before normalizing
+                transform = transforms.Compose([transforms.ConvertImageDtype(torch.float32), self.transform])
+            self.train_dataset = CustomTensorDataset(cpu_tensor, transform)
             print(f"Dataset setup complete.")
 
     def train_dataloader(self):

@@ -109,13 +109,13 @@ class HSAMI(nn.Module):
             mean of p1. Tensor of shape (B, z_dim).
             logvar of p1. Tensor of shape (B, z_dim).
         Returns:
-            kl: Scalar, KL divergence after reduction (sum over z_dim, reduction over batch).
+            kl: Scalar, KL divergence after reduction (sum over z_dim, mean over batch).
         """
         kl = 0.5 * (
             logvar1 - logvar0 + (logvar0.exp() + (mu0 - mu1) ** 2) / logvar1.exp() - 1
         )
         kl = kl.sum(dim=-1)  # sum over z_dim
-        return kl.mean() if self.reduction == "mean" else kl.sum()  # reduce over batch
+        return kl.mean()  # mean over batch
 
     def compute_score_from_logp(self, log_p, noisy_x):
         # get the log posterior score
@@ -137,10 +137,10 @@ class HSAMI(nn.Module):
 
 ####################
     def compute_z_rate(self, mu_z_from_xg, logvar_z_from_xg, noisy_x, z_sample_up_from_x):
-        '''compute the rate in Z, which is the norm of the score ∇_x log p(z|x)'''
+        '''compute the rate in Z, which is the squared norm of the score ∇_x log p(z|x)'''
         log_posterior = self.compute_log_posterior(mu_z_from_xg, logvar_z_from_xg, z_sample_up_from_x)
         score_z_given_x = self.compute_score_from_logp(log_posterior, noisy_x)
-        rate_z = score_z_given_x.norm(dim=[1])
+        rate_z = score_z_given_x.flatten(1).pow(2).sum(dim=1)  # ||g||^2, (B,)
         return rate_z
     
     def compute_score_x_given_ye(self, eta, pred_y_unguided, vjp_fn, mu_y_given_x, logvar_y_given_x):
@@ -189,9 +189,9 @@ class HSAMI(nn.Module):
         return score_z_given_ye
     
     def compute_y_rate(self, score_z_given_ye, score_x_given_ye, score_z_given_ye_and_x):
-        '''compute the rate in Y, which is the norm of the score ∇_{ye} log p(x|ye, z)'''
+        '''compute the rate in Y, which is the squared norm of the score ∇_{ye} log p(x|ye, z)'''
         score_x_given_ye_and_z = score_x_given_ye + score_z_given_ye_and_x - score_z_given_ye
-        y_rate = score_x_given_ye_and_z.norm(dim=[1])
+        y_rate = score_x_given_ye_and_z.flatten(1).pow(2).sum(dim=1)  # ||g||^2, (B,)
         return y_rate
     
     def compute_score_ye_given_x_and_z(self, score_x_given_ye, score_z_given_ye_and_x, score_ye):
@@ -359,32 +359,25 @@ class HSAMI(nn.Module):
         if self.weighted_mse:
             mse_x = weight * mse_x
 
-        # always average over batch, but sum/avg over other dimensions
-        mse_x = (
-            mse_x.mean() if self.reduction == "mean" 
-            else mse_x.mean(dim=0).sum()
-        )
+        # Every term is a per-sample total (summed over its own dims), averaged over batch,
+        # so distortions and rates are in the same units under either reduction.
+        mse_x = mse_x.flatten(1).sum(dim=1).mean()
 
-        mse_y = F.mse_loss(prediction_y, target_y, reduction=self.reduction)
+        mse_y = ((prediction_y - target_y) ** 2).flatten(1).sum(dim=1).mean()
         if self.weighted_mse:
             mse_y = weight * mse_y
 
-
-        if self.rate_type == "grad" or self.rate_type == "norm":
-            rate_y_loss = (
-                rate_y.mean() if self.reduction == "mean" 
-                else rate_y.mean(dim=0).sum()
-            )
-            rate_z_loss = (
-                rate_z.mean() if self.reduction == "mean"
-                else rate_z.mean(dim=0).sum()
-            )
-            # reduce over spatial dimensions, then avg over batch
-        elif self.rate_type == "kl":
-            rate_y_loss = rate_y.mean()  # already reduced over batch in compute_kl
-            rate_z_loss = rate_z.mean()  # already reduced over batch in compute_kl
-        else:
+        if self.rate_type not in ("grad", "norm", "kl"):
             raise ValueError(f"Invalid rate_type: {self.rate_type}")
+        rate_y_loss = rate_y.mean()  # (B,) per-sample rate, already reduced over y dims
+        rate_z_loss = rate_z.mean()  # (B,) per-sample rate, already reduced over x dims
+
+        # "mean" rescales the whole objective by the data dimension (per-pixel units),
+        # so the rate/distortion ratios, and hence beta_y / beta_z, are the same as under "sum".
+        if self.reduction == "mean":
+            data_dim = prediction_x[0].numel()
+            mse_x, mse_y = mse_x / data_dim, mse_y / data_dim
+            rate_y_loss, rate_z_loss = rate_y_loss / data_dim, rate_z_loss / data_dim
 
         total_loss = mse_x + mse_y + beta_y * rate_y_loss + beta_z * rate_z_loss  # average over batch
 

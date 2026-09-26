@@ -10,6 +10,7 @@ c_training/scripts/slurm-*.out
 c_training/lightning_logs
 c_training/hsami_checkpoints
 d_analysis/figures
+d_analysis/metrics/codes
 artifacts
 
 .venv

@@ -10,8 +10,8 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
 from a_datasets.dataset_lightning import GeneralDataModule
-from b_models.configs.sami_config_disent import Config
-from b_models.sami.sami_lightning import SAMI_Lightning
+from b_models.autoprior.sami_autoprior_lightning import SAMI_AutoPrior_Lightning
+from b_models.configs.sami_autoprior_config import SAMI_AutoPrior_CelebA_64_Training_Config
 from utils.training import (WandbArtifactCallback, get_checkpoint_dir,
                             rename_checkpoint_folder)
 
@@ -19,7 +19,7 @@ from utils.training import (WandbArtifactCallback, get_checkpoint_dir,
 # Training script
 def main():
     # ---------------------------------- params ---------------------------------- #
-    config = Config()
+    config = SAMI_AutoPrior_CelebA_64_Training_Config()
     base_dir = config.project_dir
 
     # ------------------------------- run training ------------------------------- #
@@ -52,28 +52,23 @@ def main():
     # Initialize the dataset
     datamodule = GeneralDataModule(config)
 
-    # Initialize the model
+    # Initialize the model from the pretrained autoprior, or resume a previous run of this project
     if config.resume_from_checkpoint:
-        if config.use_pretrained_denoiser_only:
-            # the pre-trained ddpm is loaded later in the SAMI_Lightning class, so we can just initialize the model here 
-            model = SAMI_Lightning(config=config)
-        else:
-            # resume from full model checkpoint
-            pretrained_checkpoint_dir = get_checkpoint_dir(
-                model_num=config.pretrained_model_number,
-                project_name=config.model_name,
-                checkpoint_dir=config.model_checkpoint_dir,
-                epoch=config.checkpoint_epoch,
-            )
-            model = SAMI_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
+        pretrained_checkpoint_dir = get_checkpoint_dir(
+            model_num=config.pretrained_model_number,
+            project_name=config.model_name,
+            checkpoint_dir=config.model_checkpoint_dir,
+            epoch=config.checkpoint_epoch,
+        )
+        model = SAMI_AutoPrior_Lightning.load_from_checkpoint(pretrained_checkpoint_dir, config=config)
     else:
-        model = SAMI_Lightning(config=config)
+        model = SAMI_AutoPrior_Lightning(config=config)
 
     # Initialize the Trainer
     trainer = Trainer(
         accelerator="cuda",
-        devices=config.num_gpus_per_node,  # GPUs per node (adjust based on your setup)
-        num_nodes=config.num_nodes,  # Number of nodes
+        devices=config.num_gpus_per_node,
+        num_nodes=config.num_nodes,
         strategy=config.strategy,
         max_epochs=config.num_epochs,
         logger=wandb_logger,
@@ -89,22 +84,20 @@ def main():
     rename_checkpoint_folder(
         trainer,
         checkpoint_dir=os.path.join(base_dir, f"c_training/lightning_checkpoints/{config.model_name}"),
-    )   
+    )
 
     # Start training
     start_time = time.time()
     trainer.fit(model, datamodule=datamodule)
-    end_time = time.time()
-    time_taken = (end_time - start_time) / 60
+    time_taken = (time.time() - start_time) / 60
 
     # Log training time
     print(f"Training time: {time_taken} minutes")
-    training_config = {}
-    training_config["training_time_minutes"] = time_taken
-    wandb_logger.log_hyperparams(training_config)
+    wandb_logger.log_hyperparams({"training_time_minutes": time_taken})
 
     # Finish wandb run
     wandb_logger.experiment.finish()
+
 
 if __name__ == "__main__":
     main()

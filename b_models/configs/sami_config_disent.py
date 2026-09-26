@@ -1,29 +1,29 @@
 from dataclasses import dataclass, fields
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 project_dir = "/mnt/home/blyo1/hdiva"
 
 
 @dataclass
-class DspritesDatasetConfig:
+class Dsprites_64_Config:
     """dsprites dataset parameters"""
 
     image_dim: int = 64
-    dataset_name: str = "dsprites"
     dataset_size: int = 737280
     data_cache_dir: str = f"{project_dir}/a_datasets/dsprites/"
 
 @dataclass
 class DenoiserConfig:
     """Denoiser parameters"""
+    denoiser_type: str = "unet"
     denoiser_act_fn: str = "relu"
     num_channels: int = 1  # 3 for color images, 1 for grayscale images
     num_kernels: int = 32
     kernel_size: int = 3
     padding: int = 1
     bias: bool = False
-    norm: str = "gn"  # "bn" for batch norm, "gn" for group norm
-    time_embedding_method: str = "as_input"  # as_input, as_channel
+    norm: Literal["gn", "bn"] = "gn"  # "bn" for batch norm, "gn" for group norm
+    time_embedding_method: Literal["as_input", "as_channel"] = "as_input"
     time_channels: int = 64
     num_blocks: int = 3  # number of downsampling/upsampling blocks in UNet
     num_enc_conv: int = 2  # number of conv layers in each downsampling block
@@ -32,21 +32,20 @@ class DenoiserConfig:
     pool_window: int = 2
 
 @dataclass
-class DDPMConfig():
-    timestep_dist: str = "uniform"  # uniform, linearly_increasing
-    num_timesteps: int = 1000
+class DDPMConfig(DenoiserConfig):
+    parameterization: Literal["velocity", "noise", "image"] = "noise"
+    timestep_dist: Literal["uniform", "linearly_increasing", "exponentially_increasing", "hump", "linear_then_uniform"] = "linear_then_uniform"
+    num_timesteps: int = 200
+    noise_schedule: Literal["cosine_in_alpha_bar", "linear_in_alpha_bar"] = "cosine_in_alpha_bar" 
     beta_minmax: tuple = (1e-4, 2e-2)
     sigma_minmax: tuple = (0.0001, 0.9999)
-    noise_schedule: str = "cosine_in_alpha_bar"  # cosine_in_alpha_bar or linear_in_alpha_bar
-    denoiser_type: str = "unet"
-    parameterization: str = "velocity"  # velocity or noise or image
+    weighted_mse: bool = False
+    reduction: Literal["mean", "sum"] = "mean"
 
 
 @dataclass
 class UNetInfNetConfig:
     """infnet (UNet-like)"""
-
-    infnet_type: str = "half_unet"
     latent_dim: int = 10
     num_kernels_rec: int = 32
     activation_rec: str = "relu"  # gelu or relu
@@ -63,21 +62,47 @@ class UNetInfNetConfig:
 @dataclass
 class ConvNetInfNetConfig:
     """infnet (ConvNet)"""
-
-    # encoder model
-    infnet_type: str = "convnet"
-    convnet_type: str = "complex"
-    latent_dim: int = 4
-    num_layers_rec: int = 5
+    latent_dim: int = 8
+    num_layers_rec: int = 3
     num_kernels_rec: int = 32
     kernel_size_rec: int = 3
     stride_rec: int = 2
     padding_rec: int = 1
-    activation_rec: str = "gelu"  # gelu or relu
-    norm_rec: str = "bn"  # "bn" for batch norm, "gn" for group norm
+    activation_rec: Literal["gelu", "relu"] = "relu" 
+    norm_rec: Literal["bn", "gn"] = "gn"  # "bn" for batch norm, "gn" for group norm
+    num_groups_rec: int = 8
     bias_rec: bool = True
-    adaptive_avg_pool_output_size: int = 1
-    time_embedding_method_rec: str = "as_input"  # none, as_input, per_layer, film
+    adaptive_avg_pool_output_size: int = 3
+    time_embedding_method_rec: Literal["none", "as_input", "per_layer", "film"] = "film"
+    logvar_init_bias: float = -2.0
+
+
+@dataclass
+class ResNetInfNetConfig(ConvNetInfNetConfig):
+    """infnet (ResNet): strided downsampling trunk + stride-1 residual blocks.
+
+    Depth comes from `num_res_blocks_rec` rather than from more downsampling stages, so
+    the spatial map stays large and the guidance score stays small while the receptive
+    field still grows. With `res_zero_init=True` each residual branch starts at alpha=0,
+    so the network begins as its downsampling trunk and `logvar_init_bias` does not need
+    retuning when depth changes.
+    """
+    # latent_dim: int = 8
+    # num_layers_rec: int = 3  # stride-2 downsampling stages (64 -> 32 -> 16 -> 8)
+    # num_kernels_rec: int = 32
+    # kernel_size_rec: int = 3
+    # stride_rec: int = 2
+    # padding_rec: int = 1
+    # activation_rec: Literal["gelu", "relu"] = "gelu"  
+    # norm_rec: Literal["bn", "gn"] = "gn"  # "bn" for batch norm, "gn" for group norm
+    # num_groups_rec: int = 8
+    # bias_rec: bool = True
+    # adaptive_avg_pool_output_size: int = 3
+    # time_embedding_method_rec: Literal["none", "as_input", "per_layer", "film"] = "film"
+    # logvar_init_bias: float = -4.0
+    
+    res_zero_init: bool = True  # start alpha at 0: identity at init, depth grows in
+    num_res_blocks_rec: int = 2  # stride-1 residual blocks at the final resolution
 
 
 @dataclass
@@ -85,36 +110,26 @@ class SAMIConfig:
     """sami loss"""
 
     model_name: str = "sami_c64c"
-    reduction: str = "sum"  # "mean" or "sum"
-    weighted_mse: bool = False
     weighted_rate: bool = False
 
     """beta"""
-    rate_type: str = "grad"  # "grad", "norm", "cumulative", "kl"
-    beta_init: float = 1e-5
-    beta_final: float = 1e-5
+    rate_type: Literal["norm", "grad", "kl"] = "kl" 
+    beta_init: float = 1e-8
+    beta_final: float = 1e-8
     beta_wait_epochs: int = 1000
     beta_annealing_epochs: int = 1000
-    beta_annealing_schedule: str = "cosine" # "linear" or "cosine" or "linear_in_log"
+    beta_annealing_schedule: Literal["linear", "cosine", "linear_in_log"] = "cosine"
 
 @dataclass
 class TrainingConfig:
     """training"""
 
-    num_epochs: int = 80000
-    train_batch_size_per_gpu: int = 4000
+    num_epochs: int = 1200
+    train_batch_size_per_gpu: int = 500
 
-    lr_schedule: str = "cosine"
-    lr_init: float = 1e-3
-    lr_final: float = 1e-4
-    lr_num_warmup_epochs: int = 10000  # this is actually the number of steps
-    encoder_lr_init: float = 1e-3
-    encoder_lr_intermed: float = 3e-5
-    encoder_lr_final: float = 3e-5
-    encoder_wait_epochs: int = 0
-    encoder_warmup_epochs: int = 50000
-    encoder_convergence_epochs: int = 0
-    precision: str = "32"  # "32" or "bf16-mixed"
+    lr: float = 1e-3
+    encoder_lr: float = 1e-3  # only gets its own param group when it differs from lr
+    precision: Literal["32", "bf16-mixed"] = "32"
     seed: int = 43
     optimizer: str = "adam"
 
@@ -132,7 +147,6 @@ class PretrainingConfig:
     pretrained_model_number: int = 6
     pretrained_artifact_id: str = "v23"
 
-    precision: str = "32"
     project_dir: str = project_dir
     model_checkpoint_dir: str = f"{project_dir}/c_training/lightning_checkpoints"
 
@@ -144,62 +158,70 @@ class ClusterConfig:
     # cluster
     strategy: str = "ddp"  # "ddp" or "deepspeed_stage_2"
     num_nodes: int = 1
-    num_gpus_per_node: int = 2
+    num_gpus_per_node: int = 4
 
     # logging
     log_every_n_steps: int = 10
-    checkpoint_every_n_epochs: int = 2000
-
+    checkpoint_every_n_epochs: int = 100
 
 @dataclass
-class SAMI_ConvNet_dSprites_Training_Config(
-    DspritesDatasetConfig,
-    DenoiserConfig,
-    ConvNetInfNetConfig,
+class DSprites_Training_Config(
+    Dsprites_64_Config,
+    DDPMConfig,
     SAMIConfig,
+    # ConvNetInfNetConfig,
+    ResNetInfNetConfig,
     TrainingConfig,
     PretrainingConfig,
     ClusterConfig,
 ):
-    """model"""
 
-    model_name: str = "sami_convnet_dsprites"
+    # dataset
+    dataset_name: str = "dsprites"
+    dataset_config: Dsprites_64_Config = Dsprites_64_Config()
 
-    # Overrides for DenoiserConfig
-    timestep_dist: str = "uniform"
-    num_kernels: int = 64
+    # infnet
+    infnet_type: Literal["half_unet", "convnet", "resnet"] = "convnet" 
+    convnet_type: Literal["simple", "complex"] = "complex"
+    # unet_config: UNetInfNetConfig = UNetInfNetConfig()
+    # resnet_config: ResNetInfNetConfig = ResNetInfNetConfig()
+    # convnet_config: ConvNetInfNetConfig = ConvNetInfNetConfig()
 
-    # Overrides for ConvNetInfNetConfig
-    convnet_type: str = "complex"
-    num_layers_rec: int = 3
-    num_kernels_rec: int = 32
+    # IMAE config
+    model_name: str = "imae_dsprites"
 
-    # Overrides for SAMIConfig
-    kl_weight_min: float = 1e-11
-    kl_weight_max: float = 1e-10
-    kl_annealing_epochs: int = 20000
+    # pretraining config
+    resume_from_checkpoint: bool = False  # master switch for using checkpoint
+    checkpoint_epoch: int | str = "last"
 
-    # Overrides for TrainingConfig
-    num_epochs: int = 700
-    train_batch_size_per_gpu: int = 1000
-    lr_init: float = 5e-3
-    lr_final: float = 3e-3
-    lr_num_warmup_epochs: int = 27000
-    encoder_lr_init: float = 2e-3
-    encoder_lr_intermed: float = 5e-3
-    encoder_lr_final: float = 4e-3
-    encoder_wait_epochs: int = 6000
-    encoder_warmup_epochs: int = 10000
-    encoder_convergence_epochs: int = 20000
-    seed: int = 42
+    use_pretrained_denoiser_only: bool = True  # use a pretrained ddpm or denoiser to initialize the denoiser, rather than use the entire pretrained diva model
+    train_infnet_only: bool = False  # if true, freeze the denoiser weights and only train the infnet
+    pretrained_model_name: str = "ddpm_dsprites"
+    pretrained_model_number: int = 6
+    pretrained_artifact_id: str = "v4"
+    
+    # # pretraining config
+    # resume_from_checkpoint: bool = True  # master switch for using checkpoint
+    # checkpoint_epoch: int | str = "last"
 
-    # Overrides for PretrainingConfig
-    resume_from_checkpoint: bool = False
-    use_pretrained_denoiser_only: bool = False
-    checkpoint_epoch: str | None = None
+    # use_pretrained_denoiser_only: bool = False  # use a pretrained ddpm or denoiser to initialize the denoiser, rather than use the entire pretrained diva model
+    # train_infnet_only: bool = False  # if true, freeze the denoiser weights and only train the infnet
+    # pretrained_model_name: str = "imae_dsprites"
+    # pretrained_model_number: int = 7
+    # pretrained_artifact_id: str = "v3"
 
-    # Overrides for ClusterConfig
+    project_dir: str = project_dir
+    model_checkpoint_dir: str = f"{project_dir}/c_training/lightning_checkpoints"
+
+    # cluster
+    strategy: str = "ddp"  # "ddp" or "deepspeed_stage_2"
     num_nodes: int = 1
+    num_gpus_per_node: int = 3
+
+    # logging
+    log_every_n_steps: int = 10
+    checkpoint_every_n_epochs: int = 100
+
 
     @classmethod
     def from_dict(cls, d: dict):
@@ -208,7 +230,7 @@ class SAMI_ConvNet_dSprites_Training_Config(
 
 @dataclass
 class Config(
-    SAMI_ConvNet_dSprites_Training_Config,
+    DSprites_Training_Config,
 ):
     @classmethod
     def from_dict(cls, d: dict):

@@ -1,17 +1,19 @@
-import torch
 import json
 import os
 import sys
+
 import numpy as np
+import torch
 
 notebook_dir = os.getcwd()
-parent_dir = os.path.abspath(os.path.join(notebook_dir, ".."))
+parent_dir = os.path.abspath(os.path.join(notebook_dir))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
+from b_models.base_modules.mlp import MLPDenoiser, MLPEncoder
 from b_models.configs.sami_simple_config import Config
-from b_models.base_modules.mlp import MLPEncoder, MLPDenoiser
 from b_models.sami.sami_module import SAMI
+
 
 def initialize_sami():
     config = Config()
@@ -35,8 +37,8 @@ def initialize_sami():
 
 def init_sami_from_config(dataset_name:str, model_num:int):
     # init model
+    from b_models.base_modules.mlp import MLPDenoiser, MLPEncoder
     from b_models.configs.sami_simple_config import Config
-    from b_models.base_modules.mlp import MLPEncoder, MLPDenoiser
     from b_models.sami.sami_module import SAMI
 
     load_dir = f"{parent_dir}/c_training/local_weights/{dataset_name}"

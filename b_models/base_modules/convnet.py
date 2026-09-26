@@ -1,5 +1,4 @@
 import torch
-
 # import torch.distributions as dist
 import torch.nn as nn
 import torch.nn.functional as F
@@ -370,6 +369,20 @@ class ConvNetComplex(nn.Module):
         self.linear_mu = nn.Linear(linear_input_dims, self.latent_dim, bias=bias)
         self.linear_logvar = nn.Linear(linear_input_dims, self.latent_dim, bias=bias)
 
+        """logvar initialisation"""
+        # The guidance score carries a 1/var factor, so a posterior that starts vague
+        # (logvar ~ 0) makes sigma_t * grad log q(z|x_t) a ~0.1% correction to the
+        # denoiser's prediction, and the only gradient that can grow it is itself
+        # proportional to its current size. Starting from a sharp, input-independent
+        # posterior gives the guidance a usable scale from step 0.
+        self.logvar_init_bias = getattr(args, "logvar_init_bias", 0.0)
+        if self.logvar_init_bias != 0.0:
+            if self.linear_logvar.bias is None:
+                raise ValueError("logvar_init_bias requires bias_rec=True; linear_logvar has no bias to set")
+            with torch.no_grad():
+                self.linear_logvar.weight.zero_()
+                self.linear_logvar.bias.fill_(self.logvar_init_bias)
+
         # Register hook to ensure gradients are contiguous
         for param in self.parameters():
             param.register_hook(lambda grad: grad.contiguous())
@@ -407,6 +420,268 @@ class ConvNetComplex(nn.Module):
                 scale, shift = time_head(emb).chunk(2, dim=1)
                 x = (1 + scale[:, :, None, None]) * x + shift[:, :, None, None]
             x = nonlin(x)
+        return self.head(x)
+
+    def head(self, x):
+        """pool, flatten and read out the Gaussian parameters"""
+        x = self.pool(x)
+        x = torch.flatten(x, start_dim=1)
+        return self.linear_mu(x), self.linear_logvar(x)
+
+    def sample(self, mu, logvar):
+        std = (0.5 * logvar).exp()
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+
+# ----------------------------- previous convnet ----------------------------- #
+
+
+
+
+
+
+
+
+
+
+
+# --------------------------- residual convolutional encoder -------------------------- #
+def _apply_time_mod(h, time_mod, time_method):
+    """FiLM / additive modulation of a normalised pre-activation."""
+    if time_mod is None:
+        return h
+    if time_method == "per_layer":
+        return h + time_mod[:, :, None, None]
+    if time_method == "film":
+        scale, shift = time_mod.chunk(2, dim=1)
+        return (1 + scale[:, :, None, None]) * h + shift[:, :, None, None]
+    return h
+
+
+class DownBlock(nn.Module):
+    """Strided conv -> norm -> (time modulation) -> activation. Halves resolution."""
+
+    def __init__(self, in_ch, out_ch, kernel_size, stride, padding, norm_fn, nonlin, bias, time_method):
+        super().__init__()
+        self.time_method = time_method
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, bias=bias)
+        self.norm = norm_fn(out_ch)
+        self.nonlin = nonlin
+
+    def forward(self, x, time_mod=None):
+        h = self.norm(self.conv(x))
+        h = _apply_time_mod(h, time_mod, self.time_method)
+        return self.nonlin(h)
+
+
+class ResBlock(nn.Module):
+    """Stride-1 residual block: x <- x + alpha * f(x). Adds depth without downsampling.
+
+    `alpha` is a learnable scalar. With `zero_init=True` it starts at 0, so the block is
+    exactly the identity at initialisation and the network *begins* as its downsampling
+    trunk, growing into the extra depth only as training finds a use for it.
+
+    This matters for SAMI specifically. The guidance term is sigma_t * grad_x log q(z|x_t),
+    whose magnitude scales with d mu / d x, so every layer that contributes at
+    initialisation inflates it. At step 0 that score is random, and a larger random score
+    is a larger corruption of the (pretrained) denoiser's prediction -- which gradient
+    descent removes by driving the score toward zero, i.e. collapsing the latent. Zero
+    init decouples depth from the initial score magnitude, so `logvar_init_bias` does not
+    have to be retuned every time the encoder's depth changes.
+
+    Measured at initialisation on dsprites (64x64, film conditioning, logvar_init_bias=-2),
+    ||score|| / encoder gradient SNR:
+        3 down, 0 res                  1.15 / 3.27
+        5 down, 0 res                  4.03 / 1.92
+        3 down + 2 res, standard init  3.61 / 2.38
+        3 down + 2 res, zero init      1.15 / 3.62
+    """
+
+    def __init__(self, channels, kernel_size, padding, norm_fn, nonlin, bias, zero_init, time_method):
+        super().__init__()
+        self.time_method = time_method
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size, 1, padding, bias=bias)
+        self.norm1 = norm_fn(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size, 1, padding, bias=bias)
+        self.norm2 = norm_fn(channels)
+        self.nonlin = nonlin
+        self.alpha = nn.Parameter(torch.zeros(1) if zero_init else torch.ones(1))
+
+    def forward(self, x, time_mod=None):
+        h = self.norm1(self.conv1(x))
+        h = _apply_time_mod(h, time_mod, self.time_method)
+        h = self.nonlin(h)
+        h = self.norm2(self.conv2(h))
+        return x + self.alpha * h
+
+
+class ResNet(nn.Module):
+    """Residual convolutional Gaussian encoder for q(z | x_t).
+
+    Layout: `num_layers_rec` strided `DownBlock`s, then `num_res_blocks_rec` stride-1
+    `ResBlock`s at the final resolution, then pool -> (mu, logvar). Depth therefore comes
+    from the residual stage rather than from further downsampling, which keeps the spatial
+    map large and the guidance score small while still extending the receptive field.
+    For 64x64 inputs, 3 down + 2 res reaches ~79px of receptive field (full image) on an
+    8x8 map, versus 63px on a 2x2 map for 5 downsampling stages.
+
+    `args.time_embedding_method_rec` selects the conditioning, matching `ConvNetComplex`:
+      - "none":      no time input at all; `forward(x)`.
+      - "as_input":  project the embedding to an image-shaped map and concatenate it with
+                     x as an extra input channel.
+      - "per_layer": add a per-block, per-channel projection of the embedding to every
+                     normalised pre-activation, in both the trunk and the residual stage.
+      - "film":      per-block, per-channel scale/shift of the normalised pre-activation,
+                     with zero-initialised heads so conditioning starts as the identity.
+
+    Every block gets its own time head, and the modulations are built as explicit
+    per-block lists whose lengths are asserted against the block lists -- a `zip` over
+    mismatched lists would silently skip blocks instead of failing.
+    """
+
+    def __init__(self, args):
+        super().__init__()
+
+        self.latent_dim: int = args.latent_dim
+        self.num_layers: int = args.num_layers_rec
+        self.num_res_blocks: int = getattr(args, "num_res_blocks_rec", 0)
+        self.res_zero_init: bool = getattr(args, "res_zero_init", True)
+        kernel_size = args.kernel_size_rec
+        stride = args.stride_rec
+        padding = args.padding_rec
+        bias = args.bias_rec
+        norm = args.norm_rec
+        num_groups = args.num_groups_rec
+        aap_output_size = args.adaptive_avg_pool_output_size
+
+        assert self.num_layers > 0, "num_layers_rec must be greater than 0"
+        assert self.num_res_blocks >= 0, "num_res_blocks_rec must be >= 0"
+
+        self.time_method = getattr(args, "time_embedding_method_rec", "none")
+        if self.time_method not in ("none", "as_input", "per_layer", "film"):
+            raise ValueError(
+                f"Unknown time_embedding_method_rec: {self.time_method}, "
+                'expected "none", "as_input", "per_layer" or "film"'
+            )
+        self.time_conditioned = self.time_method != "none"
+
+        self.num_channels: list[int] = [min(args.num_kernels_rec * (2**i), 256) for i in range(self.num_layers)]
+
+        if args.activation_rec == "relu":
+            self.nonlin = nn.ReLU()
+        elif args.activation_rec == "gelu":
+            self.nonlin = nn.GELU()
+        else:
+            raise ValueError('activation_rec must be specified, e.g. "relu" or "gelu"')
+
+        if norm == "bn":
+            norm_fn = lambda c: nn.BatchNorm2d(c) if bias else BF_BatchNorm(c)
+        elif norm == "gn":
+            norm_fn = lambda c: nn.GroupNorm(num_groups, c) if bias else nn.GroupNorm(num_groups, c, affine=False)
+        else:
+            raise ValueError(f"Unsupported normalization type: {norm}")
+
+        """time conditioning"""
+        modulated = self.time_method in ("per_layer", "film")
+        if self.time_conditioned:
+            self.time_channels = args.time_channels
+            self.time_emb = TimeEmbedding(args)
+            if self.time_method == "as_input":
+                self.time_projection = SpatialTimeProjection(args)
+            else:
+                self.time_mlp = nn.Sequential(
+                    nn.Linear(self.time_channels, self.time_channels),
+                    nn.SiLU(),
+                )
+                width = (lambda c: c if self.time_method == "per_layer" else 2 * c)
+                self.down_time_heads = nn.ModuleList(
+                    [nn.Linear(self.time_channels, width(c)) for c in self.num_channels]
+                )
+                self.res_time_heads = nn.ModuleList(
+                    [nn.Linear(self.time_channels, width(self.num_channels[-1])) for _ in range(self.num_res_blocks)]
+                )
+                if self.time_method == "film":
+                    # start at scale=0, shift=0 so conditioning begins as the identity
+                    for head in list(self.down_time_heads) + list(self.res_time_heads):
+                        nn.init.zeros_(head.weight)
+                        nn.init.zeros_(head.bias)
+
+        """downsampling trunk"""
+        self.input_channels = args.num_channels
+        self.input_dims = args.image_dim
+        block_time_method = self.time_method if modulated else "none"
+
+        self.down_blocks = nn.ModuleList()
+        current_input_channels = self.input_channels + (1 if self.time_method == "as_input" else 0)
+        for i in range(self.num_layers):
+            self.down_blocks.append(
+                DownBlock(
+                    current_input_channels, self.num_channels[i], kernel_size, stride, padding,
+                    norm_fn, self.nonlin, bias, block_time_method,
+                )
+            )
+            current_input_channels = self.num_channels[i]
+
+        """residual stage (stride 1, final resolution)"""
+        self.res_blocks = nn.ModuleList(
+            [
+                ResBlock(
+                    self.num_channels[-1], kernel_size, padding, norm_fn, self.nonlin, bias,
+                    self.res_zero_init, block_time_method,
+                )
+                for _ in range(self.num_res_blocks)
+            ]
+        )
+
+        if modulated:
+            assert len(self.down_time_heads) == len(self.down_blocks)
+            assert len(self.res_time_heads) == len(self.res_blocks)
+
+        self.pool = nn.AdaptiveAvgPool2d((aap_output_size, aap_output_size))
+
+        """linear layers"""
+        linear_input_dims = aap_output_size**2 * self.num_channels[-1]
+        self.linear_mu = nn.Linear(linear_input_dims, self.latent_dim, bias=bias)
+        self.linear_logvar = nn.Linear(linear_input_dims, self.latent_dim, bias=bias)
+
+        """logvar initialisation"""
+        # see ConvNetComplex: the guidance score carries a 1/var factor, so a posterior
+        # that starts vague leaves the guidance too small for its own gradient to grow it
+        self.logvar_init_bias = getattr(args, "logvar_init_bias", 0.0)
+        if self.logvar_init_bias != 0.0:
+            if self.linear_logvar.bias is None:
+                raise ValueError("logvar_init_bias requires bias_rec=True; linear_logvar has no bias to set")
+            with torch.no_grad():
+                self.linear_logvar.weight.zero_()
+                self.linear_logvar.bias.fill_(self.logvar_init_bias)
+
+        # Register hook to ensure gradients are contiguous
+        for param in self.parameters():
+            param.register_hook(lambda grad: grad.contiguous())
+
+    def forward(self, x, t=None):
+        if self.time_conditioned and t is None:
+            raise ValueError(
+                f'ResNet was built with time_embedding_method_rec="{self.time_method}" and requires a timestep t'
+            )
+
+        down_mods = [None] * len(self.down_blocks)
+        res_mods = [None] * len(self.res_blocks)
+
+        if self.time_conditioned:
+            emb = self.time_emb(t.float())
+            if self.time_method == "as_input":
+                x = torch.cat([x, self.time_projection(emb)], dim=1)
+            else:
+                emb = self.time_mlp(emb)
+                down_mods = [head(emb) for head in self.down_time_heads]
+                res_mods = [head(emb) for head in self.res_time_heads]
+
+        for block, mod in zip(self.down_blocks, down_mods):
+            x = block(x, mod)
+        for block, mod in zip(self.res_blocks, res_mods):
+            x = block(x, mod)
         return self.head(x)
 
     def head(self, x):

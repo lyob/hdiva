@@ -111,13 +111,13 @@ class HSAMI(nn.Module):
             mean of p1. Tensor of shape (B, z_dim).
             logvar of p1. Tensor of shape (B, z_dim).
         Returns:
-            kl: Scalar, KL divergence after reduction (sum over z_dim, reduction over batch).
+            kl: Scalar, KL divergence after reduction (sum over z_dim, mean over batch).
         """
         kl = 0.5 * (
             logvar1 - logvar0 + (logvar0.exp() + (mu0 - mu1) ** 2) / logvar1.exp() - 1
         )
         kl = kl.sum(dim=-1)  # sum over z_dim
-        return kl.mean() if self.reduction == "mean" else kl.sum()  # reduce over batch
+        return kl.mean()  # mean over batch
 
     def compute_score_from_logp(self, log_p, noisy_x):
         # get the log posterior score
@@ -155,13 +155,12 @@ class HSAMI(nn.Module):
         reducing over all non-batch dims. rate_type selects the functional:
           "grad": r_eta^2 * ||g||^2  -- Monte-Carlo integrand of the mutual information
                                         (this is the quantity the identity integrates)
-          "norm": ||g||              -- legacy un-weighted, un-squared score norm
+          "norm": ||g||^2            -- un-weighted squared score norm
         Returns shape (B,).'''
-        g = score.flatten(1)  # (B, D)
+        sq_norm = score.flatten(1).pow(2).sum(dim=1)            # ||g||^2, (B,)
         if self.rate_type == "grad":
-            sq_norm = g.pow(2).sum(dim=1)                       # ||g||^2, (B,)
             return self.rate_weight(denoiser, t_tensor) * sq_norm
-        return torch.linalg.vector_norm(g, dim=1)              # ||g||, (B,)
+        return sq_norm
 
     def compute_z_rate(self, mu_z_from_xg, logvar_z_from_xg, noisy_x, z_sample_up_from_x, t_tensor_x):
         '''compute the rate in Z from the score ∇_x log p(z|x)'''
@@ -404,32 +403,25 @@ class HSAMI(nn.Module):
         if self.weighted_mse:
             mse_x = weight * mse_x
 
-        # always average over batch, but sum/avg over other dimensions
-        mse_x = (
-            mse_x.mean() if self.reduction == "mean" 
-            else mse_x.mean(dim=0).sum()
-        )
+        # Every term is a per-sample total (summed over its own dims), averaged over batch,
+        # so distortions and rates are in the same units under either reduction.
+        mse_x = mse_x.flatten(1).sum(dim=1).mean()
 
-        mse_y = F.mse_loss(prediction_y, target_y, reduction=self.reduction)
+        mse_y = ((prediction_y - target_y) ** 2).flatten(1).sum(dim=1).mean()
         if self.weighted_mse:
             mse_y = weight * mse_y
 
-
-        if self.rate_type == "grad" or self.rate_type == "norm":
-            rate_y_loss = (
-                rate_y.mean() if self.reduction == "mean" 
-                else rate_y.mean(dim=0).sum()
-            )
-            rate_z_loss = (
-                rate_z.mean() if self.reduction == "mean"
-                else rate_z.mean(dim=0).sum()
-            )
-            # reduce over spatial dimensions, then avg over batch
-        elif self.rate_type == "kl":
-            rate_y_loss = rate_y.mean()  # already reduced over batch in compute_kl
-            rate_z_loss = rate_z.mean()  # already reduced over batch in compute_kl
-        else:
+        if self.rate_type not in ("grad", "norm", "kl"):
             raise ValueError(f"Invalid rate_type: {self.rate_type}")
+        rate_y_loss = rate_y.mean()  # (B,) per-sample rate, already reduced over y dims
+        rate_z_loss = rate_z.mean()  # (B,) per-sample rate, already reduced over x dims
+
+        # "mean" rescales the whole objective by the data dimension (per-pixel units),
+        # so the rate/distortion ratios, and hence beta_y / beta_z, are the same as under "sum".
+        if self.reduction == "mean":
+            data_dim = prediction_x[0].numel()
+            mse_x, mse_y = mse_x / data_dim, mse_y / data_dim
+            rate_y_loss, rate_z_loss = rate_y_loss / data_dim, rate_z_loss / data_dim
 
         total_loss = mse_x + mse_y + beta_y * rate_y_loss + beta_z * rate_z_loss  # average over batch
         # total_loss = mse_x + beta_y * rate_y_loss + beta_z * rate_z_loss  # average over batch
