@@ -2,14 +2,14 @@
 
 #SBATCH --job-name=ddpm
 #SBATCH -p gpu
-#SBATCH -N 3
+#SBATCH -N 2
 #SBATCH -C a100-80gb
 # This should always be 1!
 #SBATCH --ntasks-per-node=1
 # This is the physical number of GPUs per node
 #SBATCH --gpus-per-node=4
 # You can vary that one if you see you need more or less CPU cores per gpu
-#SBATCH --cpus-per-gpu=8
+#SBATCH --cpus-per-gpu=16
 #SBATCH --time=13:00:00
 
 jobid=$SLURM_JOB_ID

@@ -1,17 +1,17 @@
 #!/bin/bash -l
 
-#SBATCH --job-name=sami
+#SBATCH --job-name=ddpm
 #SBATCH -p gpu
 #SBATCH -N 1
-# SBATCH -C h100
-#SBATCH -C a100-80gb
+#SBATCH -C h100
 # This should always be 1!
 #SBATCH --ntasks-per-node=1
 # This is the physical number of GPUs per node
-#SBATCH --gpus-per-node=3
+#SBATCH --gpus-per-node=8
 # You can vary that one if you see you need more or less CPU cores per gpu
 #SBATCH --cpus-per-gpu=8
-#SBATCH --time=24:00:00
+#SBATCH --time=13:00:00
+
 
 jobid=$SLURM_JOB_ID
 current_dir=$PWD
@@ -32,7 +32,7 @@ master_node=$SLURMD_NODENAME
 # export NCCL_SOCKET_IFNAME=eno1
 
 echo "Starting training"
-srun --error="$main_dir/c_training/cluster_logs/${jobid}/err.err" \
+srun --gpu-bind=none --error="$main_dir/c_training/cluster_logs/${jobid}/err.err" \
 	 --output="$main_dir/c_training/cluster_logs/${jobid}/out.out" \
 		python `which torchrun` \
 	        --nnodes $SLURM_JOB_NUM_NODES \
@@ -40,7 +40,7 @@ srun --error="$main_dir/c_training/cluster_logs/${jobid}/err.err" \
 			--rdzv_id $SLURM_JOB_ID \
 			--rdzv_backend c10d \
 			--rdzv_endpoint $master_node:29500 \
-				c_training/sami_train_disent.py
+				c_training/ddpm_train.py
 
 sleep 1
 cd $current_dir

@@ -1,14 +1,14 @@
 #!/bin/bash -l
 
-#SBATCH --job-name=sami
+#SBATCH --job-name=sami_autoprior
+#SBATCH --nodes=1
 #SBATCH -p gpu
-#SBATCH -N 1
 # SBATCH -C h100
 #SBATCH -C a100-80gb
-# This should always be 1!
-#SBATCH --ntasks-per-node=1
 # This is the physical number of GPUs per node
-#SBATCH --gpus-per-node=3
+#SBATCH --gpus-per-node=4
+# This should always be 1!
+# SBATCH --ntasks-per-node=1
 # You can vary that one if you see you need more or less CPU cores per gpu
 #SBATCH --cpus-per-gpu=8
 #SBATCH --time=24:00:00
@@ -28,8 +28,8 @@ source ~/venvs/py310/bin/activate  # modules/2.3 and python/3.10.13
 
 master_node=$SLURMD_NODENAME
 
-# export NCCL_IB_DISABLE=1
 # export NCCL_SOCKET_IFNAME=eno1
+# export NCCL_IB_DISABLE=1
 
 echo "Starting training"
 srun --error="$main_dir/c_training/cluster_logs/${jobid}/err.err" \
@@ -40,7 +40,7 @@ srun --error="$main_dir/c_training/cluster_logs/${jobid}/err.err" \
 			--rdzv_id $SLURM_JOB_ID \
 			--rdzv_backend c10d \
 			--rdzv_endpoint $master_node:29500 \
-				c_training/sami_train_disent.py
+				c_training/sami_autoprior_train.py
 
 sleep 1
 cd $current_dir

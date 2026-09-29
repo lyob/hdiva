@@ -23,3 +23,8 @@ a_datasets/dsprites/*
 pyrightconfig.json
 wandb
 tests/**
+*.pdf
+*.pt
+
+# celeba
+*.zip
